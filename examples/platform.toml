@@ -1,0 +1,55 @@
+# All the demos in one deployment:
+#
+#   wasm-server serve --config examples/platform.toml --admin-token "$(openssl rand -hex 16)"
+#
+# Edit this file and reload (kill -HUP, or `wasm-server reload URL`), or
+# upload a new component with `wasm-server deploy URL --app NAME file.wasm`.
+# Paths are relative to this file.
+
+[databases.links]
+url = "sqlite:../data/links.db"
+init = "shortener/links.sql"
+
+[databases.stats]
+url = "sqlite:../data/stats.db"
+init = "shortener/stats.sql"
+
+[databases.chat]
+url = "sqlite:../data/chat/chat.db"
+init = "chat/chat.sql"
+
+[databases.main]
+url = "sqlite:../data/catalog.db"
+init = "../bench/catalog-sqlite.sql"
+
+# GET /hello
+[apps.hello]
+component = "../apps/hello.cwasm"
+
+# Link shortener: site, SQLite, cache, queue, typed call to `stats`.
+[apps.shortener]
+component = "../apps/shortener.cwasm"
+static = "../sites/shortener"
+domains = ["short.localhost"]
+databases = ["links"]
+
+# No HTTP: consumes clicks, rolls up the top list, answers typed calls.
+[apps.stats]
+component = "../apps/stats.cwasm"
+databases = ["stats"]
+queues = ["clicks"]
+cron = { rollup = "*/10 * * * * *" }
+
+# Chat over WebSockets held by the host.
+[apps.chat]
+component = "../apps/chat.cwasm"
+static = "../sites/chat"
+domains = ["chat.localhost"]
+websocket = "/ws"
+databases = ["chat"]
+
+# GET /catalog/products/42 (the app names its database "main")
+[apps.catalog]
+component = "../apps/catalog.cwasm"
+databases = ["main"]
+credits = 1000

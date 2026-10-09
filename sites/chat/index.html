@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Chat</title>
+  <style>
+    :root { --bg: #fff; --panel: #f4f5f7; --text: #1f2328; --muted: #6b7280; --line: #e5e7eb; --accent: #0f766e; --accent-text: #fff; --mine: #d1fae5; --error: #c0392b; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #121417; --panel: #1b1e23; --text: #e8eaed; --muted: #9aa0a6; --line: #2c2f33; --accent: #2dd4bf; --accent-text: #062a26; --mine: #134e4a; --error: #ff7b6b; }
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+    header h1 { font-size: 1.1rem; margin: 0; }
+    header span { color: var(--muted); font-size: .85rem; }
+    #join { max-width: 420px; width: 100%; margin: 15vh auto 0; padding: 0 16px; display: grid; gap: 10px; }
+    #join h2 { margin: 0 0 4px; }
+    input { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+    button { font: inherit; border: 0; border-radius: 8px; padding: 10px 16px; background: var(--accent); color: var(--accent-text); cursor: pointer; }
+    #room { display: none; flex: 1; min-height: 0; flex-direction: column; }
+    #log { flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 6px; }
+    .msg { max-width: 80%; background: var(--panel); border-radius: 12px; padding: 6px 10px; overflow-wrap: anywhere; align-self: flex-start; }
+    .msg.mine { background: var(--mine); align-self: flex-end; }
+    .msg b { font-size: .8rem; display: block; color: var(--muted); font-weight: 600; }
+    .note { align-self: center; color: var(--muted); font-size: .8rem; }
+    .note.error { color: var(--error); }
+    form#send { display: flex; gap: 8px; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
+    form#send input { flex: 1; }
+  </style>
+</head>
+<body>
+  <header><h1>Chat</h1><span id="status">not connected</span></header>
+  <form id="join">
+    <h2>Join a room</h2>
+    <input id="name" placeholder="Your name" maxlength="24" required autocomplete="nickname">
+    <input id="roomname" placeholder="Room" value="general" maxlength="32" required>
+    <button>Join</button>
+    <p style="color: var(--muted); font-size: .85rem; margin: 0">
+      Messages travel over a WebSocket held by the server; each one runs the chat function in a fresh wasm instance.
+    </p>
+  </form>
+  <div id="room">
+    <div id="log"></div>
+    <form id="send"><input id="text" placeholder="Message" maxlength="500" autocomplete="off"><button>Send</button></form>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let socket, me, room, retry = 0;
+    try { $("name").value = localStorage.getItem("chat-name") || ""; } catch {}
+
+    function line(html, cls) {
+      const log = $("log");
+      const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 40;
+      const div = document.createElement("div");
+      div.className = cls;
+      div.innerHTML = html;
+      log.appendChild(div);
+      if (stick) log.scrollTop = log.scrollHeight;
+    }
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+    const message = (m) => line(`<b>${esc(m.name)}</b>${esc(m.text)}`, "msg" + (m.name === me ? " mine" : ""));
+
+    function connect() {
+      // Relative to this page, so it works on its own domain or under a path.
+      const url = new URL("ws", location.href);
+      url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      url.search = new URLSearchParams({ name: me, room }).toString();
+      socket = new WebSocket(url);
+      $("status").textContent = "connecting…";
+      socket.onopen = () => { retry = 0; };
+      socket.onmessage = (e) => {
+        const m = JSON.parse(e.data);
+        if (m.type === "history") {
+          $("log").innerHTML = "";
+          line(`#${esc(m.room)}`, "note");
+          m.messages.forEach(message);
+        } else if (m.type === "message") {
+          message(m);
+        } else if (m.type === "presence") {
+          $("status").textContent = `#${room} · ${m.online} online`;
+          line(`${esc(m.name)} ${m.action}`, "note");
+        } else if (m.type === "error") {
+          line(esc(m.text), "note error");
+        }
+      };
+      socket.onclose = () => {
+        $("status").textContent = "reconnecting…";
+        setTimeout(connect, Math.min(1000 * 2 ** retry++, 10000));
+      };
+    }
+
+    $("join").onsubmit = (e) => {
+      e.preventDefault();
+      me = $("name").value.trim();
+      room = $("roomname").value.trim().toLowerCase();
+      try { localStorage.setItem("chat-name", me); } catch {}
+      $("join").style.display = "none";
+      $("room").style.display = "flex";
+      connect();
+      $("text").focus();
+    };
+    $("send").onsubmit = (e) => {
+      e.preventDefault();
+      const text = $("text").value.trim();
+      if (!text || socket?.readyState !== WebSocket.OPEN) return;
+      socket.send(JSON.stringify({ text }));
+      $("text").value = "";
+    };
+  </script>
+</body>
+</html>

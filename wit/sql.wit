@@ -1,0 +1,69 @@
+package platform:sdk@0.1.0;
+
+/// SQL access to databases configured in the host.
+///
+/// The host owns the connection pools and credentials. A guest refers to a
+/// database only by the name it was granted (for example "main"), so it can
+/// never see connection strings or reach databases it was not given.
+interface sql {
+    variant value {
+        null,
+        int(s64),
+        float(f64),
+        text(string),
+        boolean(bool),
+        blob(list<u8>),
+    }
+
+    type row = list<value>;
+
+    record query-result {
+        columns: list<string>,
+        rows: list<row>,
+    }
+
+    variant error {
+        /// The app has no grant for this database name.
+        not-allowed(string),
+        /// No connection could be obtained (database down, pool exhausted).
+        unavailable(string),
+        /// The database rejected the statement.
+        query(string),
+        /// A parameter or column type has no `value` mapping; cast it in SQL.
+        conversion(string),
+        /// The call took longer than the app's database timeout. The query
+        /// was cancelled; a transaction it belonged to can only be dropped.
+        timeout,
+        /// `query` returns at most this many rows; use a `cursor` for more.
+        too-many-rows(u32),
+    }
+
+    /// Runs a statement that returns rows (at most 10,000; see `cursor`).
+    /// Parameters bind to $1, $2, ...
+    query: func(db: string, statement: string, params: list<value>) -> result<query-result, error>;
+
+    /// Runs a statement and returns the number of affected rows.
+    execute: func(db: string, statement: string, params: list<value>) -> result<u64, error>;
+
+    /// A transaction pinned to one connection. Dropping it without `commit`
+    /// rolls it back; so does the request ending for any reason.
+    resource transaction {
+        begin: static func(db: string) -> result<transaction, error>;
+        query: func(statement: string, params: list<value>) -> result<query-result, error>;
+        execute: func(statement: string, params: list<value>) -> result<u64, error>;
+        commit: static func(tx: transaction) -> result<_, error>;
+    }
+
+    /// A query whose rows are fetched in batches, for results of any size.
+    /// Rows stream from the database as they are fetched, so neither the
+    /// host nor the guest holds the whole result. The cursor keeps a
+    /// connection until it is exhausted or dropped; dropping it early
+    /// cancels the query.
+    resource cursor {
+        open: static func(db: string, statement: string, params: list<value>) -> result<cursor, error>;
+        columns: func() -> list<string>;
+        /// Up to `max-rows` (at most 10,000) more rows. An empty list means
+        /// the result is exhausted.
+        next: func(max-rows: u32) -> result<list<row>, error>;
+    }
+}

@@ -1,0 +1,6 @@
+package demo:stats-impl;
+
+world stats {
+    include platform:sdk/events-handler@0.1.0;
+    export demo:stats/api@0.1.0;
+}

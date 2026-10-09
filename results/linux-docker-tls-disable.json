@@ -1,0 +1,52 @@
+{
+  "label": "linux-docker-tls-disable",
+  "cpus": 14,
+  "command": [
+    "serve",
+    "--listen",
+    "127.0.0.1:8080",
+    "--app",
+    "hello=apps/hello.cwasm",
+    "--app",
+    "compute=apps/compute.cwasm",
+    "--app",
+    "catalog=apps/catalog.cwasm",
+    "--app",
+    "api=apps/conduit.cwasm",
+    "--env",
+    "api:JWT_SECRET=***",
+    "--db",
+    "main=postgres://postgres:bench@postgres/postgres?sslmode=disable",
+    "--grant",
+    "catalog=main",
+    "--db-ca-file",
+    "/certs/ca.pem",
+    "--workers",
+    "8"
+  ],
+  "idle_rss_mib": 13.59765625,
+  "scenarios": [
+    {
+      "scenario": "db: product by id c=64",
+      "url": "/catalog/products/[1-9][0-9]{0,3}",
+      "connections": 64,
+      "requests": 920345,
+      "rps": 114996.75903157807,
+      "ok_ratio": 1.0,
+      "p50_ms": 0.5009170000000001,
+      "p99_ms": 1.276208,
+      "p999_ms": 2.150959,
+      "server_cpu_cores": 6.1047657981059436,
+      "server_cpu_us_per_req": 53.92543013761144,
+      "client_cpu_cores": 2.1127916666625133,
+      "rss_peak_mib": 64.671875,
+      "rss_after_mib": 64.671875,
+      "guest_us_avg": 298.6511501615043,
+      "guest_mem_avg_kib": 1087.9810866690786,
+      "guest_mem_max_kib": 1088.0,
+      "db_queries_per_req": 0.9999826164237855,
+      "db_wait_us_avg": 273.7689495539483,
+      "endpoints": null
+    }
+  ]
+}

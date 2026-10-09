@@ -1,0 +1,64 @@
+package platform:sdk@0.1.0;
+
+/// WebSockets held by the host. The server keeps the connections; functions
+/// run only when something happens (see `websocket-handler`), so an idle
+/// connection costs no instance. Connections and channels belong to the app
+/// that accepted them; an app can't reach another app's.
+interface websocket {
+    variant message {
+        text(string),
+        binary(list<u8>),
+    }
+
+    variant error {
+        /// Closed, or never existed (or belongs to another app).
+        no-such-connection,
+        /// Larger than the per-message limit (bytes).
+        too-large(u64),
+        /// The client isn't reading fast enough; the connection was closed.
+        backpressure,
+    }
+
+    /// Sends to one connection.
+    send: func(conn: string, msg: message) -> result<_, error>;
+
+    /// Closes a connection (it gets `on-close` too).
+    close: func(conn: string, code: u16, reason: string);
+
+    /// Channels fan out messages, e.g. a chat room. A connection leaves its
+    /// channels when it closes.
+    subscribe: func(conn: string, channel: string) -> result<_, error>;
+    unsubscribe: func(conn: string, channel: string);
+
+    /// Sends to every connection subscribed to `channel`; returns how many.
+    publish: func(channel: string, msg: message) -> result<u32, error>;
+
+    /// How many connections are subscribed to `channel`.
+    subscribers: func(channel: string) -> u32;
+
+    /// Small state kept with the connection (user, room...), since instances
+    /// keep nothing between events. At most 4 KiB.
+    set-state: func(conn: string, state: list<u8>) -> result<_, error>;
+    get-state: func(conn: string) -> option<list<u8>>;
+}
+
+/// What a function exports to accept WebSocket connections.
+interface websocket-handler {
+    use websocket.{message};
+
+    record connect-info {
+        conn: string,
+        path: string,
+        query: string,
+        headers: list<tuple<string, string>>,
+    }
+
+    /// Before the connection is accepted. `err` rejects it (HTTP 403 with
+    /// the reason). The connection may already be subscribed or sent to.
+    on-connect: func(info: connect-info) -> result<_, string>;
+
+    /// Messages from one connection arrive in order, one at a time.
+    on-message: func(conn: string, msg: message);
+
+    on-close: func(conn: string, code: u16);
+}

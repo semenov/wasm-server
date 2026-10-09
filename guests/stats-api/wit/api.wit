@@ -1,0 +1,19 @@
+package demo:stats@0.1.0;
+
+/// Click statistics for short links. Exported by the `stats` function,
+/// imported by `shortener`: the platform links the two and runs each call
+/// in a fresh `stats` instance.
+interface api {
+    record link-stats {
+        code: string,
+        clicks: u64,
+        /// Unix time in milliseconds; 0 if never clicked.
+        last-click-ms: u64,
+    }
+
+    /// Clicks for one link (zero if none yet).
+    summary: func(code: string) -> link-stats;
+
+    /// The most clicked links, as of the last rollup.
+    top: func(limit: u32) -> list<link-stats>;
+}

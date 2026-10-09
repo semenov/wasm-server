@@ -1,0 +1,31 @@
+package platform:sdk@0.1.0;
+
+/// A fast in-memory cache, shared by all instances of an app on a server.
+///
+/// Entries can disappear at any time: eviction when the app's quota is full,
+/// a restart, or a request served by another server. Use it to avoid
+/// recomputing things, never as the only copy of data.
+interface cache {
+    variant error {
+        /// Key plus value exceed the per-entry limit (bytes).
+        too-large(u64),
+    }
+
+    /// The value for `key`, if present and not expired.
+    get: func(key: string) -> option<list<u8>>;
+
+    /// Stores `value` for `ttl-ms` milliseconds (0: until evicted).
+    set: func(key: string, value: list<u8>, ttl-ms: u64) -> result<_, error>;
+
+    /// Stores `value` only if `key` is absent; returns whether it was stored.
+    /// Useful for simple locks and deduplication.
+    add: func(key: string, value: list<u8>, ttl-ms: u64) -> result<bool, error>;
+
+    delete: func(key: string);
+
+    /// Atomically adds `delta` to the counter at `key` (absent: 0) and returns
+    /// the new value. `ttl-ms` applies when the counter is created, so a key
+    /// per time window gives a rate limiter. A value that isn't a counter is
+    /// replaced.
+    incr: func(key: string, delta: s64, ttl-ms: u64) -> s64;
+}

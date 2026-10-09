@@ -1,0 +1,399 @@
+{
+  "label": "linux-docker-conduit",
+  "cpus": 14,
+  "command": [
+    "serve",
+    "--listen",
+    "127.0.0.1:8080",
+    "--app",
+    "hello=apps/hello.cwasm",
+    "--app",
+    "compute=apps/compute.cwasm",
+    "--app",
+    "catalog=apps/catalog.cwasm",
+    "--app",
+    "api=apps/conduit.cwasm",
+    "--env",
+    "api:JWT_SECRET=***",
+    "--db",
+    "conduit=postgres://postgres:bench@postgres/conduit?sslmode=verify-full",
+    "--grant",
+    "api=conduit",
+    "--db-ca-file",
+    "/certs/ca.pem",
+    "--workers",
+    "8"
+  ],
+  "idle_rss_mib": 14.08984375,
+  "scenarios": [
+    {
+      "scenario": "list articles (+count)",
+      "url": "/api/articles?limit=20",
+      "connections": 64,
+      "requests": 17787,
+      "rps": 2230.147442102264,
+      "ok_ratio": 1.0,
+      "p50_ms": 27.503957999999997,
+      "p99_ms": 61.732875,
+      "p999_ms": 77.922833,
+      "server_cpu_cores": 0.6251481338259491,
+      "server_cpu_us_per_req": 281.66638556248944,
+      "client_cpu_cores": 0.11142872428237656,
+      "rss_peak_mib": 67.97265625,
+      "rss_after_mib": 67.97265625,
+      "guest_us_avg": 28444.015858271247,
+      "guest_mem_avg_kib": 1147.869811215058,
+      "guest_mem_max_kib": 20544.0,
+      "db_queries_per_req": 1.9928295333594757,
+      "db_wait_us_avg": 28273.98061139432,
+      "endpoints": null
+    },
+    {
+      "scenario": "list by tag",
+      "url": "/api/articles?limit=20&tag=tag[0-9]",
+      "connections": 64,
+      "requests": 8773,
+      "rps": 1103.9955207979638,
+      "ok_ratio": 1.0,
+      "p50_ms": 50.214751,
+      "p99_ms": 140.024667,
+      "p999_ms": 162.501833,
+      "server_cpu_cores": 0.34789143819782037,
+      "server_cpu_us_per_req": 318.0212014134275,
+      "client_cpu_cores": 0.06364468119580728,
+      "rss_peak_mib": 72.4296875,
+      "rss_after_mib": 72.4296875,
+      "guest_us_avg": 57506.83508635129,
+      "guest_mem_avg_kib": 1143.9167043911273,
+      "guest_mem_max_kib": 20544.0,
+      "db_queries_per_req": 1.9859665006790403,
+      "db_wait_us_avg": 57326.84895258035,
+      "endpoints": null
+    },
+    {
+      "scenario": "get article",
+      "url": "/api/articles/article-[1-4][0-9]{4}",
+      "connections": 64,
+      "requests": 754615,
+      "rps": 94304.93142902854,
+      "ok_ratio": 1.0,
+      "p50_ms": 0.638167,
+      "p99_ms": 1.3942080000000001,
+      "p999_ms": 2.090416,
+      "server_cpu_cores": 4.947014344867168,
+      "server_cpu_us_per_req": 52.954155430252506,
+      "client_cpu_cores": 1.715505727608466,
+      "rss_peak_mib": 73.35546875,
+      "rss_after_mib": 73.35546875,
+      "guest_us_avg": 408.43314731600407,
+      "guest_mem_avg_kib": 1087.9668414434254,
+      "guest_mem_max_kib": 20544.0,
+      "db_queries_per_req": 0.9999695233855014,
+      "db_wait_us_avg": 378.8750218557078,
+      "endpoints": null
+    },
+    {
+      "scenario": "article comments",
+      "url": "/api/articles/article-[1-4][0-9]{4}/comments",
+      "connections": 64,
+      "requests": 503044,
+      "rps": 62852.02254810424,
+      "ok_ratio": 1.0,
+      "p50_ms": 0.935667,
+      "p99_ms": 2.712333,
+      "p999_ms": 3.935917,
+      "server_cpu_cores": 3.8675930873903144,
+      "server_cpu_us_per_req": 61.96277065226896,
+      "client_cpu_cores": 1.379676046884168,
+      "rss_peak_mib": 73.89453125,
+      "rss_after_mib": 73.89453125,
+      "guest_us_avg": 823.8611663340674,
+      "guest_mem_avg_kib": 1087.932960716188,
+      "guest_mem_max_kib": 20544.0,
+      "db_queries_per_req": 0.9999383830112024,
+      "db_wait_us_avg": 789.5219903718486,
+      "endpoints": null
+    },
+    {
+      "scenario": "feed (auth)",
+      "url": "/api/articles/feed?limit=20",
+      "connections": 64,
+      "requests": 162943,
+      "rps": 20365.321723376594,
+      "ok_ratio": 1.0,
+      "p50_ms": 2.949416,
+      "p99_ms": 7.021167,
+      "p999_ms": 8.721458,
+      "server_cpu_cores": 4.09086991601218,
+      "server_cpu_us_per_req": 201.48149966552728,
+      "client_cpu_cores": 0.5789400849647859,
+      "rss_peak_mib": 75.76953125,
+      "rss_after_mib": 75.76953125,
+      "guest_us_avg": 2851.8393964799056,
+      "guest_mem_avg_kib": 1151.667842485292,
+      "guest_mem_max_kib": 20544.0,
+      "db_queries_per_req": 1.9994233376480766,
+      "db_wait_us_avg": 2688.3945324311226,
+      "endpoints": null
+    },
+    {
+      "scenario": "profile (auth)",
+      "url": "/api/profiles/user[1-9][0-9]{0,3}",
+      "connections": 64,
+      "requests": 919521,
+      "rps": 114903.20317619416,
+      "ok_ratio": 1.0,
+      "p50_ms": 0.520458,
+      "p99_ms": 1.1807910000000001,
+      "p999_ms": 1.7110420000000002,
+      "server_cpu_cores": 5.644510695147231,
+      "server_cpu_us_per_req": 49.71066457427289,
+      "client_cpu_cores": 1.8584587891920492,
+      "rss_peak_mib": 75.89453125,
+      "rss_after_mib": 75.89453125,
+      "guest_us_avg": 305.8998428791248,
+      "guest_mem_avg_kib": 1087.9763371520849,
+      "guest_mem_max_kib": 20544.0,
+      "db_queries_per_req": 0.9999782510589016,
+      "db_wait_us_avg": 280.30244619257604,
+      "endpoints": null
+    },
+    {
+      "scenario": "popular tags",
+      "url": "/api/tags",
+      "connections": 64,
+      "requests": 8504,
+      "rps": 1070.435528704497,
+      "ok_ratio": 1.0,
+      "p50_ms": 57.933166,
+      "p99_ms": 114.163084,
+      "p999_ms": 143.792709,
+      "server_cpu_cores": 0.18089027041567254,
+      "server_cpu_us_per_req": 170.50799623706692,
+      "client_cpu_cores": 0.06431697029326428,
+      "rss_peak_mib": 77.76953125,
+      "rss_after_mib": 77.76953125,
+      "guest_us_avg": 59311.341356325865,
+      "guest_mem_avg_kib": 1080.0,
+      "guest_mem_max_kib": 20544.0,
+      "db_queries_per_req": 0.9926470588235294,
+      "db_wait_us_avg": 59237.12654493464,
+      "endpoints": null
+    },
+    {
+      "scenario": "favorite (tx)",
+      "url": "/api/articles/article-[1-4][0-9]{4}/favorite",
+      "connections": 64,
+      "requests": 308931,
+      "rps": 38609.706115705936,
+      "ok_ratio": 1.0,
+      "p50_ms": 1.424208,
+      "p99_ms": 4.079416,
+      "p999_ms": 5.285708,
+      "server_cpu_cores": 4.839678318426406,
+      "server_cpu_us_per_req": 125.91808526823142,
+      "client_cpu_cores": 0.9931189111532162,
+      "rss_peak_mib": 78.30078125,
+      "rss_after_mib": 78.30078125,
+      "guest_us_avg": 1489.8977302972246,
+      "guest_mem_avg_kib": 1087.8028169014085,
+      "guest_mem_max_kib": 20544.0,
+      "db_queries_per_req": 5.030900476387738,
+      "db_wait_us_avg": 1442.6647461811308,
+      "endpoints": null
+    },
+    {
+      "scenario": "create article (tx)",
+      "url": "/api/articles",
+      "connections": 64,
+      "requests": 215318,
+      "rps": 26915.654350528475,
+      "ok_ratio": 0.999981422825774,
+      "p50_ms": 2.188916,
+      "p99_ms": 5.2627500000000005,
+      "p999_ms": 6.9423330000000005,
+      "server_cpu_cores": 4.397161074474632,
+      "server_cpu_us_per_req": 164.22222015809183,
+      "client_cpu_cores": 0.7174539078337137,
+      "rss_peak_mib": 82.3671875,
+      "rss_after_mib": 82.3671875,
+      "guest_us_avg": 2220.792842210584,
+      "guest_mem_avg_kib": 1087.7423740145416,
+      "guest_mem_max_kib": 20544.0,
+      "db_queries_per_req": 4.998760342089868,
+      "db_wait_us_avg": 2158.041646047488,
+      "endpoints": null
+    },
+    {
+      "scenario": "login (argon2id)",
+      "url": "/api/users/login",
+      "connections": 16,
+      "requests": 1927,
+      "rps": 242.82781539870643,
+      "ok_ratio": 1.0,
+      "p50_ms": 61.839458,
+      "p99_ms": 126.21775,
+      "p999_ms": 130.278583,
+      "server_cpu_cores": 5.9684426675080156,
+      "server_cpu_us_per_req": 24805.396990140118,
+      "client_cpu_cores": 0.0123946324232814,
+      "rss_peak_mib": 346.859375,
+      "rss_after_mib": 128.359375,
+      "guest_us_avg": 52633.12060432766,
+      "guest_mem_avg_kib": 20438.157650695517,
+      "guest_mem_max_kib": 20544.0,
+      "db_queries_per_req": 0.9948480164863472,
+      "db_wait_us_avg": 16319.05358784132,
+      "endpoints": null
+    },
+    {
+      "scenario": "MIX: realistic traffic",
+      "url": "mix",
+      "connections": 128,
+      "requests": 14235,
+      "rps": 1794.7228247957669,
+      "ok_ratio": 1.0,
+      "p50_ms": null,
+      "p99_ms": 3269.277834,
+      "p999_ms": null,
+      "server_cpu_cores": 1.4820810197950336,
+      "server_cpu_us_per_req": 839.4801545486469,
+      "client_cpu_cores": 0.11056225188857796,
+      "rss_peak_mib": 293.57421875,
+      "rss_after_mib": 246.66015625,
+      "guest_us_avg": 68736.94541683492,
+      "guest_mem_avg_kib": 1483.3001462090092,
+      "guest_mem_max_kib": 20544.0,
+      "db_queries_per_req": 1.412030912761958,
+      "db_wait_us_avg": 67912.80935730698,
+      "endpoints": [
+        {
+          "endpoint": "list",
+          "connections": 32,
+          "rps": 235.89705788547184,
+          "ok_ratio": 1.0,
+          "p50_ms": 111.270667,
+          "p99_ms": 806.249876,
+          "status_codes": {
+            "200": 1856
+          },
+          "errors": {
+            "aborted due to deadline": 32
+          }
+        },
+        {
+          "endpoint": "list by tag",
+          "connections": 13,
+          "rps": 8.369287739331781,
+          "ok_ratio": 1.0,
+          "p50_ms": 1710.750126,
+          "p99_ms": 3269.277834,
+          "status_codes": {
+            "200": 54
+          },
+          "errors": {
+            "aborted due to deadline": 13
+          }
+        },
+        {
+          "endpoint": "article",
+          "connections": 32,
+          "rps": 641.6972094460592,
+          "ok_ratio": 1.0,
+          "p50_ms": 36.951792,
+          "p99_ms": 267.646,
+          "status_codes": {
+            "200": 5103
+          },
+          "errors": {
+            "aborted due to deadline": 32
+          }
+        },
+        {
+          "endpoint": "comments",
+          "connections": 19,
+          "rps": 524.1662997151667,
+          "ok_ratio": 1.0,
+          "p50_ms": 31.133542,
+          "p99_ms": 144.64529100000001,
+          "status_codes": {
+            "200": 4176
+          },
+          "errors": {
+            "aborted due to deadline": 19
+          }
+        },
+        {
+          "endpoint": "feed",
+          "connections": 13,
+          "rps": 93.45359733345391,
+          "ok_ratio": 1.0,
+          "p50_ms": 113.75075,
+          "p99_ms": 787.099417,
+          "status_codes": {
+            "200": 735
+          },
+          "errors": {
+            "aborted due to deadline": 13
+          }
+        },
+        {
+          "endpoint": "profile",
+          "connections": 6,
+          "rps": 147.18943533748657,
+          "ok_ratio": 1.0,
+          "p50_ms": 26.862375,
+          "p99_ms": 255.341708,
+          "status_codes": {
+            "200": 1172
+          },
+          "errors": {
+            "aborted due to deadline": 6
+          }
+        },
+        {
+          "endpoint": "favorite",
+          "connections": 6,
+          "rps": 66.96758103587527,
+          "ok_ratio": 1.0,
+          "p50_ms": 67.41383300000001,
+          "p99_ms": 424.969459,
+          "status_codes": {
+            "200": 530
+          },
+          "errors": {
+            "aborted due to deadline": 6
+          }
+        },
+        {
+          "endpoint": "create",
+          "connections": 4,
+          "rps": 40.368445370479144,
+          "ok_ratio": 1.0,
+          "p50_ms": 80.036167,
+          "p99_ms": 300.527708,
+          "status_codes": {
+            "201": 319
+          },
+          "errors": {
+            "aborted due to deadline": 4
+          }
+        },
+        {
+          "endpoint": "login",
+          "connections": 3,
+          "rps": 36.61391093244218,
+          "ok_ratio": 1.0,
+          "p50_ms": 50.626916,
+          "p99_ms": 928.237125,
+          "status_codes": {
+            "200": 290
+          },
+          "errors": {
+            "aborted due to deadline": 3
+          }
+        }
+      ]
+    }
+  ]
+}

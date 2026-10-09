@@ -1,0 +1,39 @@
+# Postgres for the `catalog` app, plus the benchmark container.
+#
+#   docker compose up -d postgres                 # just the database (localhost:5433)
+#   docker compose run --rm bench                 # database load tests on Linux
+#
+# synchronous_commit=off: commits don't wait for the WAL flush, so write
+# benchmarks measure the server and Postgres CPU rather than the VM's disk.
+# TLS is on (test CA in bench/certs/ca.pem, made at first start); add
+# ?sslmode=require to a URL and pass --db-ca-file to use it.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: bench
+    entrypoint: ["/bin/sh", "/pg-tls.sh"]
+    command: ["-c", "max_connections=300", "-c", "shared_buffers=512MB", "-c", "synchronous_commit=off"]
+    volumes:
+      - ./bench/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+      - ./bench/conduit.sql:/docker-entrypoint-initdb.d/conduit.sql:ro
+      - ./bench/pg-tls.sh:/pg-tls.sh:ro
+      - ./bench/certs:/certs
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      # TCP check: the temporary server used during init listens on a socket only.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+      interval: 1s
+      retries: 60
+
+  bench:
+    build: .
+    profiles: ["bench"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./results:/bench/results
+      - ./bench/certs:/certs:ro
+    command: ["--suite", "db", "--db", "postgres://postgres:bench@postgres/postgres?sslmode=verify-full", "--db-ca-file", "/certs/ca.pem", "--label", "linux-docker-db", "--", "--workers", "8"]

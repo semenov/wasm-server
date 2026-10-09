@@ -1,0 +1,42 @@
+package platform:sdk@0.1.0;
+
+/// Durable queues. A message is stored before `send` returns and delivered
+/// at least once to the queue's consumer function through `events.handle`,
+/// with retries and backoff; after the last attempt it is kept as dead.
+interface queue {
+    variant error {
+        /// No queue with this name is configured.
+        unknown-queue(string),
+        /// Payload larger than the limit (bytes).
+        too-large(u64),
+        /// The queue store couldn't take the message.
+        unavailable(string),
+    }
+
+    /// Queues `payload` for `name`, delivered no earlier than `delay-ms` from
+    /// now.
+    send: func(name: string, payload: list<u8>, delay-ms: u64) -> result<_, error>;
+}
+
+/// What a function exports to receive queue messages and cron ticks.
+interface events {
+    enum kind {
+        queue,
+        cron,
+    }
+
+    record event {
+        /// Unique per message; the same on every retry (for idempotency).
+        id: string,
+        kind: kind,
+        /// The queue name, or the cron job name.
+        name: string,
+        payload: list<u8>,
+        /// 1 on the first delivery.
+        attempt: u32,
+    }
+
+    /// `ok` acknowledges the event. An error, a trap or a timeout makes the
+    /// platform retry it later.
+    handle: func(event: event) -> result<_, string>;
+}

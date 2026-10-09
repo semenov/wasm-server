@@ -1,0 +1,6 @@
+package demo:shortener;
+
+world app {
+    include platform:sdk/imports@0.1.0;
+    import demo:stats/api@0.1.0;
+}

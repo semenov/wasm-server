@@ -1,0 +1,28 @@
+package platform:sdk@0.1.0;
+
+/// Everything the platform offers to apps. An app's component only imports
+/// the interfaces it actually uses.
+world imports {
+    import sql;
+    import cache;
+    import queue;
+    import websocket;
+}
+
+/// A function that also receives queue messages and cron ticks.
+world events-handler {
+    include imports;
+    export events;
+}
+
+/// A function that accepts WebSocket connections.
+world websocket-app {
+    include imports;
+    export websocket-handler;
+}
+
+/// What the server binds to (host side): every import and every export.
+world platform-host {
+    include events-handler;
+    export websocket-handler;
+}

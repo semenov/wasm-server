@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["server"]
+
+[profile.release]
+lto = "thin"
+panic = "abort"
+debug = "line-tables-only"
+
+# Quick builds for trying things out; benchmarks use `release`.
+[profile.fast]
+inherits = "release"
+lto = false
+debug = false
+incremental = true

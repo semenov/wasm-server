@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shortener</title>
+  <style>
+    :root { --bg: #fff; --text: #1f2328; --muted: #6b7280; --line: #e5e7eb; --accent: #4f46e5; --accent-text: #fff; --panel: #f6f7f9; --error: #c0392b; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #14161a; --text: #e8eaed; --muted: #9aa0a6; --line: #2c2f33; --accent: #8b85ff; --accent-text: #0f0d26; --panel: #1d2025; --error: #ff7b6b; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { max-width: 720px; margin: 0 auto; padding: 32px 16px; }
+    h1 { margin: 0 0 4px; font-size: 1.8rem; }
+    p.lead { margin: 0 0 24px; color: var(--muted); }
+    form { display: flex; gap: 8px; }
+    input { flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+    button { font: inherit; border: 0; border-radius: 6px; padding: 10px 16px; background: var(--accent); color: var(--accent-text); cursor: pointer; }
+    .result { margin: 12px 0 0; min-height: 1.5em; overflow-wrap: anywhere; }
+    .error { color: var(--error); }
+    h2 { font-size: 1.1rem; margin: 32px 0 8px; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    th { color: var(--muted); font-weight: 500; font-size: .85rem; }
+    td.num, th.num { text-align: right; width: 80px; font-variant-numeric: tabular-nums; }
+    td.code { width: 110px; }
+    a { color: var(--accent); }
+    .muted { color: var(--muted); font-size: .85rem; }
+    .panel { background: var(--panel); border-radius: 8px; padding: 12px 16px; margin-top: 32px; font-size: .9rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Shortener</h1>
+    <p class="lead">Short links on wasm functions: SQLite, a cache, a queue, cron and a typed call between functions.</p>
+    <form id="form">
+      <input id="url" type="url" placeholder="https://example.com/a/very/long/link" required>
+      <button>Shorten</button>
+    </form>
+    <p id="result" class="result"></p>
+
+    <h2>Most clicked</h2>
+    <table>
+      <thead><tr><th class="code">Link</th><th>Goes to</th><th class="num">Clicks</th></tr></thead>
+      <tbody id="top"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody>
+    </table>
+    <p class="muted">Clicks are counted through a queue and the list is rolled up by cron every 10 seconds.</p>
+
+    <div class="panel">
+      <code>shortener</code> handles HTTP and stores links; each redirect queues a click.
+      <code>stats</code> has no HTTP: it consumes the queue, owns its own database, and answers
+      <code>demo:stats/api</code> calls from <code>shortener</code>. This page is served by the host directly.
+    </div>
+  </main>
+  <script>
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+    document.getElementById("form").onsubmit = async (e) => {
+      e.preventDefault();
+      const result = document.getElementById("result");
+      try {
+        const resp = await fetch("/api/links", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ url: document.getElementById("url").value }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || resp.statusText);
+        const short = location.origin + data.short;
+        result.className = "result";
+        result.innerHTML = `Short link: <a href="${esc(short)}" target="_blank" rel="noopener">${esc(short)}</a>`;
+        document.getElementById("url").value = "";
+      } catch (err) {
+        result.className = "result error";
+        result.textContent = err.message;
+      }
+    };
+
+    async function loadTop() {
+      try {
+        const { links } = await (await fetch("/api/top")).json();
+        document.getElementById("top").innerHTML = links.length
+          ? links.map((l) => `<tr><td class="code"><a href="/r/${esc(l.code)}" target="_blank" rel="noopener">${esc(l.code)}</a></td>
+              <td title="${esc(l.url)}">${esc(l.url)}</td><td class="num">${l.clicks}</td></tr>`).join("")
+          : `<tr><td colspan="3" class="muted">No clicks yet. Shorten a link and open it.</td></tr>`;
+      } catch {
+        // Keep the last list on a failed refresh.
+      }
+    }
+    loadTop();
+    setInterval(loadTop, 5000);
+  </script>
+</body>
+</html>

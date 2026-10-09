@@ -1,0 +1,8 @@
+# Settings for homebase: run `homebase` here to start the dev server
+# (it gets its port in $PORT), `homebase deploy` to deploy. https://github.com/semenov/homebase
+
+name = "wasm-server"
+start = "examples/shortener/run.sh --listen 127.0.0.1:$PORT --domain wasm-server.localhost=shortener --domain wasm-server.local=shortener"
+
+[env]
+  SERVER = "target/fast/wasm-server"

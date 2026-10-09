@@ -1,0 +1,179 @@
+{
+  "label": "linux-docker-conduit-mix",
+  "cpus": 14,
+  "command": [
+    "serve",
+    "--listen",
+    "127.0.0.1:8080",
+    "--app",
+    "hello=apps/hello.cwasm",
+    "--app",
+    "compute=apps/compute.cwasm",
+    "--app",
+    "catalog=apps/catalog.cwasm",
+    "--app",
+    "api=apps/conduit.cwasm",
+    "--env",
+    "api:JWT_SECRET=***",
+    "--db",
+    "conduit=postgres://postgres:bench@postgres/conduit?sslmode=verify-full",
+    "--grant",
+    "api=conduit",
+    "--db-ca-file",
+    "/certs/ca.pem",
+    "--workers",
+    "8"
+  ],
+  "idle_rss_mib": 14.1015625,
+  "scenarios": [
+    {
+      "scenario": "MIX: realistic traffic",
+      "url": "mix",
+      "connections": 128,
+      "requests": 64731,
+      "rps": 6482.397014388449,
+      "ok_ratio": 1.0,
+      "p50_ms": null,
+      "p99_ms": 207.395333,
+      "p999_ms": null,
+      "server_cpu_cores": 2.9926133981211693,
+      "server_cpu_us_per_req": 463.9199147240117,
+      "client_cpu_cores": 0.3908989887810183,
+      "rss_peak_mib": 222.078125,
+      "rss_after_mib": 171.453125,
+      "guest_us_avg": 18753.958304295535,
+      "guest_mem_avg_kib": 1199.7784698880632,
+      "guest_mem_max_kib": 20544.0,
+      "db_queries_per_req": 1.4867710999414105,
+      "db_wait_us_avg": 18266.573130330875,
+      "endpoints": [
+        {
+          "endpoint": "list",
+          "connections": 32,
+          "rps": 674.3785608083076,
+          "ok_ratio": 1.0,
+          "p50_ms": 38.606625,
+          "p99_ms": 186.082625,
+          "status_codes": {
+            "200": 6716
+          },
+          "errors": {
+            "aborted due to deadline": 32
+          }
+        },
+        {
+          "endpoint": "list by tag",
+          "connections": 13,
+          "rps": 236.55080038463865,
+          "ok_ratio": 1.0,
+          "p50_ms": 39.81975,
+          "p99_ms": 207.395333,
+          "status_codes": {
+            "200": 2354
+          },
+          "errors": {
+            "aborted due to deadline": 13
+          }
+        },
+        {
+          "endpoint": "article",
+          "connections": 32,
+          "rps": 2474.2416060369756,
+          "ok_ratio": 1.0,
+          "p50_ms": 6.980416,
+          "p99_ms": 99.444,
+          "status_codes": {
+            "200": 24729
+          },
+          "errors": {
+            "aborted due to deadline": 32
+          }
+        },
+        {
+          "endpoint": "comments",
+          "connections": 19,
+          "rps": 1592.9568407447487,
+          "ok_ratio": 1.0,
+          "p50_ms": 7.513417,
+          "p99_ms": 77.466542,
+          "status_codes": {
+            "200": 15916
+          },
+          "errors": {
+            "aborted due to deadline": 19
+          }
+        },
+        {
+          "endpoint": "feed",
+          "connections": 13,
+          "rps": 593.6619610850834,
+          "ok_ratio": 1.0,
+          "p50_ms": 14.794666999999999,
+          "p99_ms": 163.876458,
+          "status_codes": {
+            "200": 5926
+          },
+          "errors": {
+            "aborted due to deadline": 13
+          }
+        },
+        {
+          "endpoint": "profile",
+          "connections": 6,
+          "rps": 519.6784902305141,
+          "ok_ratio": 1.0,
+          "p50_ms": 9.349207999999999,
+          "p99_ms": 38.374292,
+          "status_codes": {
+            "200": 5192
+          },
+          "errors": {
+            "aborted due to deadline": 6
+          }
+        },
+        {
+          "endpoint": "favorite",
+          "connections": 6,
+          "rps": 253.31803145270973,
+          "ok_ratio": 1.0,
+          "p50_ms": 12.668125,
+          "p99_ms": 139.8225,
+          "status_codes": {
+            "200": 2528
+          },
+          "errors": {
+            "aborted due to deadline": 6
+          }
+        },
+        {
+          "endpoint": "create",
+          "connections": 4,
+          "rps": 104.41939295883428,
+          "ok_ratio": 1.0,
+          "p50_ms": 21.40275,
+          "p99_ms": 142.503625,
+          "status_codes": {
+            "201": 1041
+          },
+          "errors": {
+            "aborted due to deadline": 4
+          }
+        },
+        {
+          "endpoint": "login",
+          "connections": 3,
+          "rps": 33.191330686636164,
+          "ok_ratio": 1.0,
+          "p50_ms": 95.3975,
+          "p99_ms": 161.297042,
+          "status_codes": {
+            "200": 329
+          },
+          "errors": {
+            "aborted due to deadline": 3
+          }
+        }
+      ]
+    }
+  ]
+}
