@@ -1,0 +1,12 @@
+[package]
+name = "notes-rs"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasip2.workspace = true
+wit-bindgen = "0.62"
+serde_json = "1"

@@ -1,0 +1,8 @@
+package demo:cnotes;
+
+/// A notes app in C: HTTP in, SQLite and the cache from the platform.
+world app {
+    import platform:sdk/sql@0.1.0;
+    import platform:sdk/cache@0.1.0;
+    export wasi:http/incoming-handler@0.2.12;
+}

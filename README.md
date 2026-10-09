@@ -432,12 +432,19 @@ docker compose run --rm bench --suite ...        # the same on Linux
 
 ## Writing an app
 
-- **Build:** an app is a Rust `cdylib` for `wasm32-wasip2`.
+- **Build:** an app is a Rust `cdylib` for `wasm32-wasip2`. Or any language
+  that compiles to a WASI component: see `guests-c/notes` for the same kind of
+  app in C (wasi-sdk plus `wit-bindgen c`).
   - **HTTP:** use `wasip2::http::proxy::export!` (see `guests/hello`).
   - **Platform interfaces:** generate bindings with
     `wit_bindgen::generate!({ path: ..., world: "platform:sdk/imports" })`.
   - **Your own interfaces:** add them to your own world, with `wit/` as a
     dependency (see `guests/stats` and `guests/shortener`).
+- **Stack size:** Rust reserves a 1 MiB stack by default, most of a small
+  app's memory. `guests/.cargo/config.toml` sets 128 KiB, which brings typical
+  apps from 1,088 KiB to 192 KiB per instance. An app that overflows its stack
+  traps cleanly (`out of bounds memory access`): the stack sits below the data,
+  so it can't corrupt memory. Raise it per app with `-zstack-size` if needed.
 - **Compile ahead of time:** `wasm-server compile app.wasm -o app.cwasm`.
   `.cwasm` files contain native code; they must come from the same
   `wasm-server` build on the same CPU architecture.

@@ -238,6 +238,29 @@ handshake once. (Both runs are below the 151k measured earlier because the
 database has changed since: a second database and dead rows from about half a
 million stock updates. Only the side-by-side comparison is meaningful.)
 
+## Guest language: C vs Rust (the same notes app)
+
+`guests-c/notes` (C, wasi-sdk 34 + `wit-bindgen c`) and `guests/notes-rs`
+(Rust): the same routes, SQLite through `platform:sdk/sql`, a counter in the
+cache. Linux numbers come from the Docker VM with 8 workers and 64 connections.
+
+| | C | Rust |
+|---|---|---|
+| Lines of app code | 203 | 85 |
+| `.wasm` | **55 KB** (20 KB gzip) | 147 KB |
+| Memory per instance | 128 KiB | 1,088 KiB with the default 1 MiB stack, 128 KiB with a 64 KiB stack |
+| Instantiation | 6.6 µs | 6.2 µs |
+| GET: 20 notes, cache, JSON | 73.6k–75.6k RPS | 72.2k–73.7k RPS |
+| POST: SQLite insert | 30.3k RPS | 29.9k RPS |
+
+- **Speed doesn't depend on the guest's language;** the server and SQLite
+  dominate.
+- **Memory is a toolchain default, not the language:** Rust's 1 MiB stack
+  reservation. The guests workspace now uses 128 KiB, so typical Rust apps run
+  at 192 KiB per instance (5.7× less), and every demo still works.
+- **C costs more to write:** manual buffers, JSON escaping and memory
+  management, and a verbose binding API. It wins on size (about 3× smaller).
+
 ## What the numbers say
 
 - **Cost per request:** about 33 µs of server CPU for a full HTTP request, of which

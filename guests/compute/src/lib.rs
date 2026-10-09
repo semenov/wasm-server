@@ -1,6 +1,8 @@
 //! CPU- and memory-bound app for exercising the server's limits:
 //!   /compute?fib=30     naive Fibonacci (fib=45 runs past the timeout)
 //!   /compute?alloc=128  allocate and touch N MiB (past the memory limit traps)
+//!   /compute?stack=100  recurse N levels with 1 KiB of stack each (past the
+//!                       stack size traps)
 
 use std::io::Write as _;
 use wasip2::http::types::{Fields, IncomingRequest, OutgoingBody, OutgoingResponse, ResponseOutparam};
@@ -9,6 +11,15 @@ struct Compute;
 
 fn fib(n: u64) -> u64 {
     if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+}
+
+/// Uses about 1 KiB of stack per level.
+#[inline(never)]
+fn deep(n: u64) -> u64 {
+    let mut frame = [0u8; 1024];
+    frame[(n % 1024) as usize] = n as u8;
+    let frame = std::hint::black_box(frame);
+    if n == 0 { frame[0] as u64 } else { deep(n - 1) + frame[(n % 1024) as usize] as u64 }
 }
 
 fn query_param(path: &str, key: &str) -> Option<u64> {
@@ -24,6 +35,8 @@ impl wasip2::exports::http::incoming_handler::Guest for Compute {
         let path = request.path_with_query().unwrap_or_default();
         let message = if let Some(n) = query_param(&path, "fib") {
             format!("fib({n}) = {}\n", fib(n))
+        } else if let Some(n) = query_param(&path, "stack") {
+            format!("recursed {n} levels: {}\n", deep(n))
         } else if let Some(mb) = query_param(&path, "alloc") {
             let buf = vec![1u8; (mb as usize) << 20];
             format!("allocated {} MiB, checksum {}\n", mb, buf.iter().step_by(4096).map(|&b| b as u64).sum::<u64>())

@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS notes (
+    id   INTEGER PRIMARY KEY,
+    text TEXT    NOT NULL,
+    at   INTEGER NOT NULL
+);

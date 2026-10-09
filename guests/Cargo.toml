@@ -2,7 +2,7 @@
 # wasm32-wasip2, not for the host.
 [workspace]
 resolver = "3"
-members = ["hello", "compute", "catalog", "conduit", "stats", "shortener", "chat"]
+members = ["hello", "compute", "catalog", "conduit", "stats", "shortener", "chat", "notes-rs"]
 
 [workspace.dependencies]
 wasip2 = "2"

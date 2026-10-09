@@ -1,2 +1,10 @@
 [build]
 target = "wasm32-wasip2"
+
+# Rust reserves a 1 MiB stack by default; most of an instance's memory was
+# that reservation. 128 KiB is plenty for typical handlers and cuts memory
+# per instance about 8×. An app that overflows it traps (the stack sits
+# below the data, so overflow can't corrupt memory); raise it per app with
+# -zstack-size if needed.
+[target.wasm32-wasip2]
+rustflags = ["-C", "link-arg=-zstack-size=131072"]
