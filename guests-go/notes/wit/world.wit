@@ -1,0 +1,9 @@
+package demo:gonotes;
+
+/// A notes app in Go (TinyGo): HTTP in, SQLite and the cache from the platform.
+world app {
+    include wasi:cli/imports@0.2.12;
+    import platform:sdk/sql@0.1.0;
+    import platform:sdk/cache@0.1.0;
+    export wasi:http/incoming-handler@0.2.12;
+}

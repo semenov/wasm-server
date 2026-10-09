@@ -238,28 +238,36 @@ handshake once. (Both runs are below the 151k measured earlier because the
 database has changed since: a second database and dead rows from about half a
 million stock updates. Only the side-by-side comparison is meaningful.)
 
-## Guest language: C vs Rust (the same notes app)
+## Guest language: C, Rust and Go (the same notes app)
 
-`guests-c/notes` (C, wasi-sdk 34 + `wit-bindgen c`) and `guests/notes-rs`
-(Rust): the same routes, SQLite through `platform:sdk/sql`, a counter in the
-cache. Linux numbers come from the Docker VM with 8 workers and 64 connections.
+`guests-c/notes` (C: wasi-sdk 34 + `wit-bindgen c`), `guests/notes-rs` (Rust,
+128 KiB stack) and `guests-go/notes` (TinyGo 0.42 + `wit-bindgen-go`): the same
+routes, SQLite through `platform:sdk/sql`, a counter in the cache. Linux, in
+the Docker VM, 8 workers, 64 connections, all in one run.
 
-| | C | Rust |
-|---|---|---|
-| Lines of app code | 203 | 85 |
-| `.wasm` | **55 KB** (20 KB gzip) | 147 KB |
-| Memory per instance | 128 KiB | 1,088 KiB with the default 1 MiB stack, 128 KiB with a 64 KiB stack |
-| Instantiation | 6.6 µs | 6.2 µs |
-| GET: 20 notes, cache, JSON | 73.6k–75.6k RPS | 72.2k–73.7k RPS |
-| POST: SQLite insert | 30.3k RPS | 29.9k RPS |
+| | C | Rust | Go | Go, hand-written JSON | Go, default GC |
+|---|---|---|---|---|---|
+| Lines of app code | 203 | 85 | 136 | 160 | 136 |
+| `.wasm` | 55 KB | 147 KB | 578 KB | 67 KB (58 KB at `-opt=z`) | 1.1 MB |
+| Memory per instance | 128 KiB | 192 KiB | 192 KiB | 128 KiB | 384 KiB |
+| Instantiations/s, 8 threads | 1.56M | 1.76M | 1.36M | 1.40M | 0.24M |
+| GET: 20 notes, cache, JSON | 86.3k–86.8k RPS | 87.5k RPS | 83.9k RPS | 84.5k–84.9k RPS | 43.6k RPS |
+| POST: SQLite insert | 30.0k–30.1k RPS | 29.5k–30.1k RPS | 29.1k RPS | 28.9k–29.6k RPS | 22.1k RPS |
 
-- **Speed doesn't depend on the guest's language;** the server and SQLite
-  dominate.
-- **Memory is a toolchain default, not the language:** Rust's 1 MiB stack
-  reservation. The guests workspace now uses 128 KiB, so typical Rust apps run
-  at 192 KiB per instance (5.7× less), and every demo still works.
-- **C costs more to write:** manual buffers, JSON escaping and memory
-  management, and a verbose binding API. It wins on size (about 3× smaller).
+The Go builds use `-gc=leaking -scheduler=none` except the last column.
+
+- **Speed hardly depends on the guest's language;** the server and SQLite
+  dominate. Go is within about 3% of C and Rust.
+- **Memory is a toolchain default, not the language.** Rust reserved a 1 MiB
+  stack (1,088 KiB per instance); the guests workspace now uses 128 KiB.
+- **TinyGo needs two settings.** With its default GC, instantiation is 6.5×
+  slower and throughput halves, most likely from the runtime's start-up work.
+  An instance lives for one request, so a GC that never collects
+  (`-gc=leaking`) is the right fit.
+- **`encoding/json` is about 500 KB of a Go app** (reflection). Hand-written
+  JSON brings Go to C's size.
+- **C costs the most to write:** manual buffers, escaping and memory
+  management, and a verbose binding API.
 
 ## What the numbers say
 

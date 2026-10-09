@@ -433,8 +433,10 @@ docker compose run --rm bench --suite ...        # the same on Linux
 ## Writing an app
 
 - **Build:** an app is a Rust `cdylib` for `wasm32-wasip2`. Or any language
-  that compiles to a WASI component: see `guests-c/notes` for the same kind of
-  app in C (wasi-sdk plus `wit-bindgen c`).
+  that compiles to a WASI component: the same notes app is in C
+  (`guests-c/notes`, wasi-sdk plus `wit-bindgen c`) and in Go
+  (`guests-go/notes`, TinyGo plus `wit-bindgen-go`, built with
+  `-gc=leaking`). See BENCHMARKS.md for how they compare.
   - **HTTP:** use `wasip2::http::proxy::export!` (see `guests/hello`).
   - **Platform interfaces:** generate bindings with
     `wit_bindgen::generate!({ path: ..., world: "platform:sdk/imports" })`.
