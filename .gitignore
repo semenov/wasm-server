@@ -3,3 +3,4 @@
 /apps
 /bench/certs
 /data
+/bench/native-conduit/rust/target

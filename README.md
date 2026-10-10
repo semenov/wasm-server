@@ -36,7 +36,8 @@ static sites. Everything an app uses is metered and billed in credits.
 - `sites/`: static frontends for `conduit` and `shortener`
 - `examples/shortener/`, `examples/chat/`: schemas and run scripts for the showcases
 - `bench/`: load test, seed data, `native-go/` (the notes app as a native Go
-  server, for comparison); `docker-compose.yml`, `Dockerfile`: Postgres (with
+  server, for comparison), `native-conduit/` (the Conduit API as native Go
+  and Rust servers, and `compare.sh`); `docker-compose.yml`, `Dockerfile`: Postgres (with
   TLS) and the Linux benchmark image
 - `docs/hosting.md`: multi-server hosting design; `docs/findings.md`: what the
   experiments taught us (wasm vs native, guest languages, outbound access,
@@ -495,6 +496,11 @@ docker compose run --rm bench --suite ...        # the same on Linux
 - WASI 0.3 (native async): wasmtime 49 already runs it, so try one Rust app on
   nightly (`wasm32-wasip3`) next to the 0.2 apps; move fully once the target
   is stable. Streaming responses will need a longer request limit.
+- Head-of-line blocking on a worker: a CPU-heavy request (e.g. a 25 ms
+  argon2 login) delays the other requests on its core, which gave 3× worse
+  p99 than native servers in the Conduit mix. Try work stealing between
+  workers, or moving long-running instances off the accepting worker, and
+  measure the cost per request (`bench/native-conduit/compare.sh`).
 - Per-app logs.
 - CLI commands for agents: `new`, `build`, `call`, with `--json` output.
 - Benchmark tasks for agent experiments: give agents app specs and measure the

@@ -13,6 +13,12 @@ Suites:
            Endpoints one at a time, then a mixed workload.
   shortener  The functions showcase on SQLite: redirect (cache + queue),
            a typed call between functions, inserts. Needs --data-dir.
+  compare  `hello` plus the conduit suite, for comparing the wasm app with the
+           native servers in bench/native-conduit (--target go|rust).
+
+Targets: `wasm` (wasm-server) or a native Conduit server (`go`, `rust`,
+binary from --native-bin), which has no /_platform/stats: guest and database
+columns stay empty. --db-cgroup adds the database container's CPU.
 
 Works on Linux (/proc) and macOS (ps). Prints a Markdown table and writes the
 raw numbers to results/<label>.json.
@@ -98,6 +104,7 @@ SUITES = {
         scenario("create article (tx)", "/api/articles", 64, "POST", auth=True, body=NEW_ARTICLE),
     ],
 }
+SUITES["compare"] = [scenario("hello (no database) c=64", "/hello", 64), *SUITES["conduit"]]
 
 JWT_SECRET = "loadtest-secret-" + secrets.token_hex(16)
 
@@ -131,6 +138,22 @@ class Proc:
         return int(out.strip()) * 1024
 
 
+class CgroupCpu:
+    """CPU seconds used by a cgroup (e.g. the database's container)."""
+
+    def __init__(self, path):
+        self.path = path
+
+    def cpu_seconds(self):
+        if not self.path:
+            return 0.0
+        with open(os.path.join(self.path, "cpu.stat")) as f:
+            for line in f:
+                if line.startswith("usage_usec"):
+                    return int(line.split()[1]) / 1e6
+        return 0.0
+
+
 class RssSampler(threading.Thread):
     def __init__(self, proc, interval=0.1):
         super().__init__(daemon=True)
@@ -155,7 +178,13 @@ def api(base, method, path, body=None, token=None, host=None):
         return json.load(r)
 
 
+NATIVE = False
+
+
 def get_stats(base):
+    """Per-app counters; native servers have none."""
+    if NATIVE:
+        return None
     return api(base, "GET", "/_platform/stats")["apps"]
 
 
@@ -165,7 +194,10 @@ def wait_ready(base, server, timeout=30):
         if server.poll() is not None:
             sys.exit(f"server exited with code {server.returncode}: {server.stderr.read()}")
         try:
-            get_stats(base)
+            if NATIVE:
+                urllib.request.urlopen(base + "/hello", timeout=1).read()
+            else:
+                get_stats(base)
             return
         except OSError:
             time.sleep(0.1)
@@ -229,7 +261,12 @@ def app_of(s):
     return s["path"].strip("/").split("/")[0].split("?")[0]
 
 
-def run_scenario(base, proc, s, duration, warmup, ctx):
+def app_stats(base, app):
+    stats = get_stats(base)
+    return stats[app] if stats else None
+
+
+def run_scenario(base, proc, db, s, duration, warmup, ctx):
     parts = s.get("mix") or [(1, s)]
     total_weight = sum(w for w, _ in parts)
     # Split connections by weight, at least one each.
@@ -238,19 +275,23 @@ def run_scenario(base, proc, s, duration, warmup, ctx):
     if warmup:
         run_oha([oha_cmd(base, p, c, warmup, ctx) for p, c in jobs])
 
-    before = get_stats(base)[app]
+    before = app_stats(base, app)
     sampler = RssSampler(proc)
     sampler.start()
-    cpu0, client0, t0 = proc.cpu_seconds(), children_cpu(), time.monotonic()
+    cpu0, client0, db0, t0 = proc.cpu_seconds(), children_cpu(), db.cpu_seconds(), time.monotonic()
     results = run_oha([oha_cmd(base, p, c, duration, ctx) for p, c in jobs])
     wall = time.monotonic() - t0
-    cpu1, client1 = proc.cpu_seconds(), children_cpu()
+    cpu1, client1, db1 = proc.cpu_seconds(), children_cpu(), db.cpu_seconds()
     sampler.stop.set()
     sampler.join()
-    after = get_stats(base)[app]
+    after = app_stats(base, app)
 
-    delta = {k: after[k] - before[k] for k in before if k != "mem_peak_max_bytes"}
-    instances = max(delta["requests"] - delta["errors"] - delta["timeouts"], 1)
+    if before is not None:
+        delta = {k: after[k] - before[k] for k in before if k != "mem_peak_max_bytes"}
+        instances = max(delta["requests"] - delta["errors"] - delta["timeouts"], 1)
+        per_instance = lambda key, scale: delta[key] / instances / scale
+    else:
+        per_instance = lambda key, scale: None
     total = ok = 0
     rps = 0.0
     endpoints = []
@@ -285,13 +326,15 @@ def run_scenario(base, proc, s, duration, warmup, ctx):
         "server_cpu_cores": server_cpu / wall,
         "server_cpu_us_per_req": server_cpu / max(total, 1) * 1e6,
         "client_cpu_cores": (client1 - client0) / wall,
+        "db_cpu_cores": (db1 - db0) / wall if db.path else None,
+        "db_cpu_us_per_req": (db1 - db0) / max(total, 1) * 1e6 if db.path else None,
         "rss_peak_mib": sampler.peak / 2**20,
         "rss_after_mib": proc.rss_bytes() / 2**20,
-        "guest_us_avg": delta["guest_ns"] / instances / 1e3,
-        "guest_mem_avg_kib": delta["mem_peak_sum_bytes"] / instances / 1024,
-        "guest_mem_max_kib": after["mem_peak_max_bytes"] / 1024,
-        "db_queries_per_req": delta["db_queries"] / instances,
-        "db_wait_us_avg": delta["db_wait_ns"] / instances / 1e3,
+        "guest_us_avg": per_instance("guest_ns", 1e3),
+        "guest_mem_avg_kib": per_instance("mem_peak_sum_bytes", 1024),
+        "guest_mem_max_kib": after["mem_peak_max_bytes"] / 1024 if after else None,
+        "db_queries_per_req": per_instance("db_queries", 1),
+        "db_wait_us_avg": per_instance("db_wait_ns", 1e3),
         "endpoints": endpoints if len(endpoints) > 1 else None,
     }
 
@@ -314,6 +357,10 @@ COLUMNS = [
     ("guest_us_avg", "Guest µs/req", "{:.1f}"),
     ("guest_mem_avg_kib", "Guest mem KiB/inst", "{:,.0f}"),
 ]
+DB_CPU_COLUMNS = [
+    ("db_cpu_cores", "DB CPU cores", "{:.2f}"),
+    ("db_cpu_us_per_req", "DB CPU µs/req", "{:.1f}"),
+]
 DB_COLUMNS = [
     ("db_queries_per_req", "DB calls/req", "{:.1f}"),
     ("db_wait_us_avg", "DB wait µs/req", "{:.1f}"),
@@ -321,7 +368,9 @@ DB_COLUMNS = [
 
 
 def table(rows):
-    columns = COLUMNS + (DB_COLUMNS if any(r["db_queries_per_req"] for r in rows) else [])
+    columns = [c for c in COLUMNS if any(r[c[0]] is not None for r in rows)]
+    columns += DB_CPU_COLUMNS if any(r["db_cpu_cores"] is not None for r in rows) else []
+    columns += DB_COLUMNS if any(r["db_queries_per_req"] for r in rows) else []
     lines = ["| " + " | ".join(c[1] for c in columns) + " |", "|" + "---|" * len(columns)]
     for r in rows:
         lines.append("| " + " | ".join(fmt(r[key], spec) for key, _, spec in columns) + " |")
@@ -349,13 +398,23 @@ def main():
     ap.add_argument("--db-ca-file", help="CA certificate for database TLS")
     ap.add_argument("--data-dir", help="directory for SQLite databases and the job store (shortener suite)")
     ap.add_argument("--only", help="run only scenarios whose name contains this text")
+    ap.add_argument("--target", choices=["wasm", "go", "rust"], default="wasm",
+                    help="wasm-server, or a native Conduit server from bench/native-conduit")
+    ap.add_argument("--native-bin", help="the native server's binary (default: /usr/local/bin/conduit-TARGET)")
+    ap.add_argument("--native-cores", type=int, default=8, help="GOMAXPROCS / tokio worker threads")
+    ap.add_argument("--native-pool", type=int, default=32, help="database connections (wasm: 8 workers x 4)")
+    ap.add_argument("--cpu-list", help="pin the server to these CPUs with taskset, e.g. 0-7")
+    ap.add_argument("--db-cgroup", default=os.environ.get("DB_CGROUP"),
+                    help="the database container's cgroup directory, to measure its CPU")
     ap.add_argument("server_args", nargs="*", help="extra args for `wasm-server serve` (after --)")
     args = ap.parse_args()
 
-    needs = {"db": args.db, "conduit": args.conduit_db}
-    for suite, url in needs.items():
-        if args.suite in (suite, "all") and not url:
-            sys.exit(f"the {suite} suite needs --{'db' if suite == 'db' else 'conduit-db'} postgres://...")
+    # "all" runs every suite except compare, which repeats conduit.
+    in_run = lambda suite: args.suite == suite or (args.suite == "all" and suite != "compare")
+    needs = {"db": ("db", args.db), "conduit": ("conduit-db", args.conduit_db), "compare": ("conduit-db", args.conduit_db)}
+    for suite, (flag, url) in needs.items():
+        if in_run(suite) and not url:
+            sys.exit(f"the {suite} suite needs --{flag} postgres://...")
 
     cmd = [
         args.server, "serve", "--listen", args.listen,
@@ -381,15 +440,34 @@ def main():
             "--queue", "clicks=stats", "--cron", "stats:rollup=*/10 * * * * *", "--data-dir", d,
             "--domain", f"{SHORT}=shortener",
         ]
-    scenarios = [s for suite, items in SUITES.items() if args.suite in (suite, "all") for s in items]
-    server = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    env = None
+    if args.target != "wasm":
+        global NATIVE
+        NATIVE = True
+        if not args.conduit_db:
+            sys.exit("native targets need --conduit-db postgres://...")
+        cmd = [args.native_bin or f"/usr/local/bin/conduit-{args.target}"]
+        env = {**os.environ, "JWT_SECRET": JWT_SECRET, "LISTEN": args.listen, "POOL_SIZE": str(args.native_pool),
+               "GOMAXPROCS": str(args.native_cores), "WORKERS": str(args.native_cores)}
+        url = args.conduit_db
+        if args.db_ca_file:
+            # Go (pgx) reads libpq's sslrootcert; Rust takes DB_CA_FILE.
+            url += ("&" if "?" in url else "?") + f"sslrootcert={args.db_ca_file}"
+            env["DB_CA_FILE"] = args.db_ca_file
+        env["DATABASE_URL"] = url
+    if args.cpu_list:
+        cmd = ["taskset", "-c", args.cpu_list, *cmd]
+    scenarios = [s for suite, items in SUITES.items() if in_run(suite) for s in items]
+    server = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=env)
     base = f"http://{args.listen}"
     try:
         wait_ready(base, server)
+        # Under taskset the server is exec'd in place, so the pid is the same.
         proc = Proc(server.pid)
+        db = CgroupCpu(args.db_cgroup)
         time.sleep(0.5)
         idle_rss = proc.rss_bytes() / 2**20
-        printable = [a.replace(JWT_SECRET, "***") for a in cmd[1:]]
+        printable = [a.replace(JWT_SECRET, "***") for a in cmd]
         print(f"# {args.label}: {' '.join(printable)}")
         print(f"cpus={os.cpu_count()} idle RSS={idle_rss:.1f} MiB\n", flush=True)
 
@@ -403,7 +481,7 @@ def main():
         for s in scenarios:
             if args.only and args.only not in s["name"]:
                 continue
-            row = run_scenario(base, proc, s, args.duration, args.warmup, ctx)
+            row = run_scenario(base, proc, db, s, args.duration, args.warmup, ctx)
             rows.append(row)
             print(f"  done: {s['name']}: {row['rps']:,.0f} rps", file=sys.stderr, flush=True)
 
@@ -411,7 +489,7 @@ def main():
         os.makedirs("results", exist_ok=True)
         out = f"results/{args.label}.json"
         with open(out, "w") as f:
-            json.dump({"label": args.label, "cpus": os.cpu_count(), "command": printable,
+            json.dump({"label": args.label, "target": args.target, "cpus": os.cpu_count(), "command": printable,
                        "idle_rss_mib": idle_rss, "scenarios": rows}, f, indent=2)
         print(f"\nraw results: {out}")
     finally:

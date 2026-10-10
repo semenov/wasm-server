@@ -303,6 +303,114 @@ Cost of each additional app (`density.sh`):
 - Caveats: the Go server is untuned while ours is; CPU-heavy code wasn't
   measured (code inside wasm usually runs 1.2–2× slower than native).
 
+## Typical backend: wasm vs native Go and Rust (Conduit)
+
+The Conduit API three ways:
+- **wasm:** the `conduit` app on `wasm-server`.
+- **Go:** `net/http` + pgx.
+- **Rust:** axum + tokio-postgres/deadpool.
+
+All three share the routes, SQL, JWT and argon2id settings, and cache counts
+and popular tags in process (`bench/native-conduit`). Measured on 2026-10-10.
+
+**Setup:**
+- **Same machine and database:** the same Docker VM and Postgres 17 over TLS
+  (`verify-full`), with 32 connections.
+- **Same CPUs:** every server is pinned to the same 8 CPUs.
+- **Fresh data:** each run starts from a fresh copy of the seed data.
+- **Rounds:** three runs per server; ranges cover all of them.
+- **CPU:** the server's CPU is the server process; Postgres CPU is the
+  database container's cgroup.
+
+Run: `bench/native-conduit/compare.sh 2`. Raw numbers:
+`results/linux-docker-compare-*.json`.
+
+**Throughput and latency** (64 connections; login 16, the mix 128):
+
+| Scenario | wasm RPS | Go RPS | Rust RPS | wasm p99 | Go p99 | Rust p99 |
+|---|---|---|---|---|---|---|
+| `hello`, no database | 151k–192k | **334k–338k** | 282k–293k | 1.0–1.2 ms | 2.2 ms | **0.5 ms** |
+| Get article | 69k–88k | 66k–76k | 75k–77k | 1.7–2.2 | 3.0–3.4 | 1.6–1.8 |
+| Profile (auth) | 86k–105k | 91k–97k | 101k–106k | 1.5–1.8 | 2.7–2.8 | 1.5–1.6 |
+| Article comments | 48k–62k | 47k–54k | 50k–53k | 2.7–3.4 | 3.2–3.5 | 2.4–2.5 |
+| List articles (+ cached count) | 20k–26k | 25k–29k | 23k–24k | 6.3–8.4 | 5.3–6.2 | 4.5–4.8 |
+| Feed (auth) | 18k–21k | 21k–24k | 20k–21k | 7.0–9.4 | 6.1–7.0 | 5.1–5.4 |
+| List by tag | 3.0k–3.2k | 2.7k–3.0k | 3.0k | 43–50 | 37–41 | 36 |
+| Popular tags (cache hit) | 185k–204k | 303k–321k | 314k–325k | 0.8 | 2.1–2.2 | 0.5–0.6 |
+| Favorite (transaction) | 29k–33k | 28k–30k | 27k–28k | 3.8–5.2 | 4.4–4.7 | 4.0–4.3 |
+| Create article (transaction) | 23k–27k | 21k–23k | 20k | 5.4–6.0 | 5.4–5.7 | 5.9–7.0 |
+| Login (argon2id) | 241–296 | 235–250 | **360–387** | 128–168 | 124–135 | **69–75** |
+| Realistic mix | 10.4k–13.1k | 10.9k–11.5k | 10.6k–11.5k | 140–210 | 101–114 | 106–113 |
+
+**CPU and memory:**
+
+| Scenario | wasm CPU µs/req | Go | Rust | wasm RSS peak | Go | Rust | Postgres CPU µs/req |
+|---|---|---|---|---|---|---|---|
+| Idle | – | – | – | 20 MiB | 11–14 MiB | **4 MiB** | – |
+| `hello` | 39–50 | 13–14 | **10** | 39–62 MiB | 20–22 | **8** | – |
+| Get article | 56–73 | 52–60 | 48–50 | 59–87 | 31–33 | **18** | 54–74 |
+| List articles | 158–220 | **98–119** | 168–173 | 56–82 | 34–36 | **13** | 232–331 |
+| Feed | 184–226 | **111–126** | 177–186 | 61–90 | 34–35 | **18** | 330–417 |
+| Favorite | 137–159 | 132–142 | **117–120** | 61–91 | 31–34 | **18** | 177–203 |
+| Login | 26.9k–29.6k | 29.8k–32.4k | **20.4k–21.6k** | **325–356** | 629–670 | 2,889–3,195 | 162–297 |
+| Realistic mix | 266–379 | 265–279 | 242–263 | 285–289 | 160–194 | 2,710–2,952 | 709–923 |
+
+Every request succeeded in every run.
+
+What this shows:
+
+- **Throughput on database endpoints is the same** within run-to-run noise
+  for all three, because Postgres is the limit.
+  - It used 4–13 of the VM's 14 vCPUs.
+  - On these endpoints Postgres spends as much CPU per request as the server,
+    or more (list by tag: about 4.3 ms of Postgres CPU per request).
+  - The wasm numbers vary most between runs (±15%).
+- **wasm costs about 30–40 µs more server CPU per request.**
+  - On `hello` that's 39–50 µs vs 10–14 µs: instantiation, the WASI context,
+    copying the request and response through `wasi:http`. That gives native
+    servers 1.8–2.2× the throughput when there is no database.
+  - On database endpoints the server spends 1.0–1.5× native's CPU.
+    Rust's list and feed are as expensive as wasm's (168–186 µs; `json!`
+    building `serde_json::Value` trees). Go is the cheapest there.
+- **A CPU-heavy request hurts the others on its worker in wasm.**
+  - In the mix, wasm's p99 on cheap endpoints (article, profile, list) is
+    50–66 ms vs 16–19 ms native.
+  - **Measured cause:** with the 2% of logins removed from the mix, wasm's
+    and Go's p99 were close (wasm 14–35 ms, Go 11–46 ms).
+  - **Why:** an argon2 login takes about 25 ms of CPU. `wasm-server` is
+    thread-per-core: a request stays on the worker that accepted it, and the
+    guest yields only every 10 ms epoch tick. So requests queued on that
+    worker wait while idle workers can't take them.
+  - Go's scheduler and tokio steal work across cores, and the native Rust
+    server runs argon2 on the blocking pool.
+- **Memory: native is smaller in steady state.**
+  - Rust 13–18 MiB, Go 30–36 MiB, wasm 56–91 MiB: pool slots, per-worker
+    database pools and the engine.
+- **Under memory-heavy requests, wasm is the most predictable.**
+  - Instance memory goes back to the pool after each request, so 16
+    concurrent logins peak at about 340 MiB (16 × 19 MiB plus the base),
+    falling to about 110 MiB.
+  - Go peaks at about 650 MiB and holds about 500 MiB afterwards (the GC
+    frees it lazily; `GOMEMLIMIT` would bound it).
+- **The native Rust server ran out of memory under login load.** It held
+  2.9–3.2 GB and didn't release it. In the 4 GiB VM, standalone login tests
+  were OOM-killed (exit 137), and one of four suite runs died before writing
+  results.
+  - **Not a leak:** it's glibc malloc. After the first 19 MiB argon2 buffer
+    is freed, glibc's *dynamic mmap threshold* rises above 19 MiB, so later
+    buffers come from per-thread arenas, which fragment and never shrink.
+  - `MALLOC_ARENA_MAX=2` didn't help: still OOM.
+  - `MALLOC_MMAP_THRESHOLD_=131072` (a fixed threshold) fixed it: peak
+    321 MiB, 17 MiB after, with the same throughput
+    (`results/linux-docker-compare-rust-malloc-fix.json`).
+  - A typical axum service with any large per-request buffer can hit this.
+    wasm guests don't: their allocator works inside linear memory, which the
+    host discards.
+- **Benchmark pitfall:** the first attempt at the malloc fix set the variable
+  for the whole container, so oha (also Rust on glibc) got it too, and Rust
+  "got" 25–40% faster. Applied to the server alone, the speedup disappeared.
+  The load generator's own allocator affects these numbers.
+
 ## Rust guest size: what's inside
 
 `notes-rs` (147 KB, `opt-level=3`, stripped): code 93 KB, data 33 KB, the

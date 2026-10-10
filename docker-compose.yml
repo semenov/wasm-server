@@ -33,7 +33,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # The host's cgroups, to read Postgres's CPU time (bench/native-conduit/compare.sh).
+    cgroup: host
     volumes:
       - ./results:/bench/results
       - ./bench/certs:/certs:ro
+      - /sys/fs/cgroup:/hostcg:ro
     command: ["--suite", "db", "--db", "postgres://postgres:bench@postgres/postgres?sslmode=verify-full", "--db-ca-file", "/certs/ca.pem", "--label", "linux-docker-db", "--", "--workers", "8"]

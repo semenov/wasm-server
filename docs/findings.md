@@ -24,6 +24,45 @@ costs 10–100× more memory and seconds to start.
 The price of the model: there's no state in memory between requests, so every
 stateful feature (cache, queues, WebSockets, cron) has to live in the host.
 
+### A typical backend: Conduit as wasm, Go and Rust (2026-10-10)
+
+The same Conduit API as a wasm app, a `net/http` + pgx server and an axum +
+tokio-postgres server, all on the same Postgres and the same 8 CPUs
+(`bench/native-conduit`, numbers in `BENCHMARKS.md`):
+
+- **With a database, throughput is the same.** Postgres is the limit long
+  before any of the servers. wasm's overhead is about 30–40 µs of server CPU
+  per request (instance, WASI context, `wasi:http` copies). It matters only
+  for endpoints that don't touch the database: `hello` and cache hits run
+  at about 55–60% of native throughput.
+- **Steady-state memory is higher for wasm:** 60–90 MiB vs 30–35 (Go) and
+  13–18 (Rust) for one app. The per-app cost that matters for density
+  (about 660 KB per extra app vs a process per app) is measured separately
+  above.
+- **Peak memory is most predictable with wasm.** An instance's memory goes
+  back to the pool when the request ends. Memory-heavy requests (argon2,
+  19 MiB) left Go holding about 500 MiB after the load, and left Rust with
+  glibc malloc holding about 3 GB until it was OOM-killed.
+  - The Rust problem is glibc's dynamic mmap threshold, not a leak. A fixed
+    `MALLOC_MMAP_THRESHOLD_` fixes it; `MALLOC_ARENA_MAX` does not.
+  - Untrusted apps can't be relied on to tune their allocator, so this is a
+    real argument for per-request linear memory.
+- **Our weak spot is head-of-line blocking.**
+  - **The problem:** a CPU-heavy request (25 ms argon2) delays the other
+    requests on its worker. In a mix with 2% logins, cheap endpoints had a
+    p99 of 50–66 ms on wasm vs 16–19 ms native; without the logins the
+    difference disappears.
+  - **Why:** thread-per-core keeps a request on the worker that accepted it,
+    and guests yield only every 10 ms epoch tick.
+  - **Possible fixes:**
+    - work stealing (tokio's multi-thread runtime) at some cost per request;
+    - shorter ticks for guests that have run a long time;
+    - moving CPU-heavy instances off the accepting worker.
+- **Benchmark hygiene:** environment variables given to the whole benchmark
+  container also reach the load generator. A glibc setting meant for the
+  server made oha faster and the server look 25–40% faster. Set server-only
+  settings on the server alone.
+
 ## Guest languages
 
 The same notes app runs in C, Rust and Go (TinyGo) with no server changes;
