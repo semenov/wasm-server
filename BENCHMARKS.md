@@ -269,6 +269,69 @@ The Go builds use `-gc=leaking -scheduler=none` except the last column.
 - **C costs the most to write:** manual buffers, escaping and memory
   management, and a verbose binding API.
 
+## Native Go vs wasm (the same notes app)
+
+`bench/native-go`: the notes app as an ordinary Go server (`net/http`,
+`database/sql`), next to the wasm C and Rust apps. Linux, in the Docker VM,
+8 CPUs shared with the load generator, 64 connections, 6 s per test, two
+rounds. CPU is the server process's user + system time.
+
+| | wasm C | wasm Rust | Go, pure-Go SQLite | Go, cgo SQLite |
+|---|---|---|---|---|
+| GET, RPS | **88k–89k** | **88k–89k** | 57k–60k | 54k–55k |
+| GET, p99 | **1.5–1.7 ms** | **1.5 ms** | 4.2 ms | 8 ms |
+| GET, CPU per 1,000 requests | 75 ms | 75 ms | **58 ms** | 92 ms |
+| POST, RPS | 30k | 30k–31k | 26k–29k | **36k–38k** |
+| POST, p99 | **3.4–4.0 ms** | 4.1 ms | 13–14 ms | 9–11 ms |
+| POST, CPU per 1,000 requests | 76–77 ms | 75–83 ms | 40–42 ms | **35–37 ms** |
+| Memory, one app (RSS) | 15 MB | 15 MB | 10–13 MB | 12–14 MB |
+
+Cost of each additional app (`density.sh`):
+
+| | 1 app | 200 apps | Per extra app |
+|---|---|---|---|
+| One `wasm-server` (Rust notes app, each served once) | 15 MB | 147 MB | **~660 KB** |
+| One Go process per app | 10 MB | ~2 GB | ~10 MB |
+
+- **Speed is comparable.** wasm reads faster with 3–5× better tail latency;
+  the cgo Go server writes faster.
+- **Go spends less CPU per request,** half on writes. That is our write path
+  (async writer lock, a hop to a blocking thread, an instance per request),
+  not wasm, and can be optimized.
+- **Density is where wasm wins:** about 15× less memory per idle app, no CPU
+  while idle, and 6 µs to start an instance instead of a process.
+- Caveats: the Go server is untuned while ours is; CPU-heavy code wasn't
+  measured (code inside wasm usually runs 1.2–2× slower than native).
+
+## Rust guest size: what's inside
+
+`notes-rs` (147 KB, `opt-level=3`, stripped): code 93 KB, data 33 KB, the
+component wrapper (WIT types and imports) 16 KB. The code by purpose:
+
+| | Size | Share |
+|---|---|---|
+| Debug formatting for `unwrap`/`expect` messages | 27 KB | 29% |
+| Allocator (dlmalloc from wasi-libc) | 15 KB | 16% |
+| serde_json + BTreeMap (`json!` builds a map) | 13 KB | 14% |
+| `fmt` machinery | 10 KB | 10% |
+| **The app itself** | 8.5 KB | 9% |
+| Panics | 6 KB | 7% |
+| WIT bindings | 3 KB | 3% |
+
+The largest single function (6.6 KB) is `Debug` for `wasi:http`'s
+`error-code` (about 40 variants). `hello` is 93 KB, 37% of it Debug
+formatting. Measured options:
+
+| | hello | notes-rs | conduit |
+|---|---|---|---|
+| Current (`opt-level=3`) | 93 KB | 147 KB | 354 KB |
+| `opt-level="s"` | 87 KB | 121 KB | 287 KB |
+| + `-Zbuild-std` (nightly) | 84 KB | 114 KB | 275 KB |
+| + `-Cpanic=immediate-abort` (nightly) | 33 KB | 61 KB | 224 KB |
+
+None is adopted: `immediate-abort` drops panic messages, which an agent
+debugging its app needs, and the size isn't a bottleneck.
+
 ## What the numbers say
 
 - **Cost per request:** about 33 µs of server CPU for a full HTTP request, of which

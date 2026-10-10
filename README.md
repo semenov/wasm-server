@@ -31,9 +31,16 @@ static sites. Everything an app uses is metered and billed in credits.
   - `conduit`: the RealWorld "Conduit" API, a typical blog backend (JWT, argon2id, cache)
   - `shortener` + `stats`: the functions showcase (see below)
   - `chat`: chat rooms over WebSockets, with no HTTP handler at all
+  - `notes-rs`: a small notes app, the Rust twin of the C and Go ones
+- `guests-c/notes`, `guests-go/notes`: the same notes app in C and in Go (TinyGo)
 - `sites/`: static frontends for `conduit` and `shortener`
 - `examples/shortener/`, `examples/chat/`: schemas and run scripts for the showcases
-- `bench/`: load test, seed data; `docker-compose.yml`, `Dockerfile`: Postgres (with TLS) and the Linux benchmark image
+- `bench/`: load test, seed data, `native-go/` (the notes app as a native Go
+  server, for comparison); `docker-compose.yml`, `Dockerfile`: Postgres (with
+  TLS) and the Linux benchmark image
+- `docs/hosting.md`: multi-server hosting design; `docs/findings.md`: what the
+  experiments taught us (wasm vs native, guest languages, outbound access,
+  WASI status); `BENCHMARKS.md`: the numbers
 
 ## Quick start
 
@@ -481,4 +488,15 @@ docker compose run --rm bench --suite ...        # the same on Linux
 - Per-tenant credit pools and quotas (today credits are per app).
 - SQLite replication (read replicas, continuous backup to object storage).
 - Queues across servers (NATS JetStream), as described in `docs/hosting.md`.
-- Outbound HTTP with pooled connections; WASI 0.3 (native async) once guests support it.
+- **Outbound HTTP protection (an open SSRF hole today):** deny loopback,
+  private and metadata addresses after DNS resolution, a per-app allow-list
+  (`outbound = [...]`), metering of outbound requests and bytes, pooled
+  connections and connect and first-byte timeouts. See `docs/findings.md`.
+- WASI 0.3 (native async): wasmtime 49 already runs it, so try one Rust app on
+  nightly (`wasm32-wasip3`) next to the 0.2 apps; move fully once the target
+  is stable. Streaming responses will need a longer request limit.
+- Per-app logs.
+- CLI commands for agents: `new`, `build`, `call`, with `--json` output.
+- Benchmark tasks for agent experiments: give agents app specs and measure the
+  results.
+- A license for the repository.
