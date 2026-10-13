@@ -20,8 +20,9 @@ pub struct Site {
 
 /// How a request reached its site.
 pub enum Matched<'a> {
-    /// Through one of the site's domains: the whole path belongs to the site.
-    Domain(&'a Site),
+    /// Through one of the site's domains, under the site's path there (`/`,
+    /// `/api`): the app sees the whole path, its files are below that path.
+    Domain(&'a Site, &'a str),
     /// Through the `/NAME/...` prefix (or the fallback site).
     Prefix(&'a Site),
 }
@@ -80,7 +81,7 @@ impl Routes {
             if let Some(list) = self.domains.get(&host.to_ascii_lowercase()) {
                 // nothing matching under a domain that has sites: not found,
                 // rather than some other site's page
-                return list.iter().find(|(prefix, _)| under(path, prefix)).map(|(_, site)| Matched::Domain(site));
+                return list.iter().find(|(prefix, _)| under(path, prefix)).map(|(prefix, site)| Matched::Domain(site, prefix));
             }
         }
         let first = path.trim_start_matches('/').split(['/', '?']).next().unwrap_or("");

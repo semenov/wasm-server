@@ -445,6 +445,12 @@ project is one or more apps sharing domains, databases and secrets:
 - **Paths:** apps of a project share its domains, each taking a `path`
   (`/api`: `/api` and below, not `/apix`); the longest matching path wins,
   and an app without one takes the rest. The app sees the whole path.
+- **Files:** an app can carry static files (`"static": true` in its
+  settings, and its files in the deploy's `"files": {"site": {"index.html":
+  "<base64>", ...}}`). With code, the files are served first; without, it's
+  a site, and `"spa": true` makes paths that aren't files (and have no
+  extension) get `index.html`. Under a `path`, its files are below that
+  path. They're kept in `static/APP/`.
 - **Names:** an app named like its project is `NAME` to the server; the
   others are `NAME.APP` (`shop.api`), in logs, metrics and the API.
   `metrics?project=NAME` adds a project's apps together.

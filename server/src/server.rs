@@ -156,7 +156,7 @@ async fn handle(shared: Arc<Platform>, worker: usize, pools: Arc<Pools>, mut req
     // Held for the whole request: it finishes on the version it started on.
     let current = shared.current();
     let (site, site_path) = match current.routes.resolve(host, path) {
-        Some(Matched::Domain(site)) => (site, path),
+        Some(Matched::Domain(site, prefix)) => (site, if prefix == "/" { path } else { path.strip_prefix(prefix).filter(|r| !r.is_empty()).unwrap_or("/") }),
         // Static files of a path-routed site are relative to its prefix.
         Some(Matched::Prefix(site)) => {
             let rest = path.strip_prefix('/').and_then(|p| p.strip_prefix(site.name.as_str()));
@@ -176,6 +176,13 @@ async fn handle(shared: Arc<Platform>, worker: usize, pools: Arc<Pools>, mut req
                 counters.add(Counter::EgressBytes, len.unwrap_or(0));
             }
             return resp;
+        }
+        // a single-page app: paths that aren't files are its own routes
+        if site.app.is_none() {
+            if let Some(resp) = files.fallback(req.method(), site_path, req.headers()) {
+                shared.stats.counters(worker, site.id).add(Counter::StaticRequests, 1);
+                return resp;
+            }
         }
     }
     if let Some(app) = site.app.clone().filter(|a| a.config.websocket_path.as_deref() == Some(site_path)) {

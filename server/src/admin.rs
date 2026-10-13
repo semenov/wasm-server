@@ -336,7 +336,7 @@ async fn deploy_managed(platform: Arc<Platform>, req: Request<Incoming>, app: St
         .iter()
         .filter(|(_, spec)| !spec.component.starts_with(&root))
         .map(|(n, _)| n.clone())
-        .chain(current.deployment.sites.keys().cloned())
+        .chain(current.deployment.sites.iter().filter(|(_, spec)| !spec.static_dir.starts_with(&root)).map(|(n, _)| n.clone()))
         .collect();
     drop(current);
     let engine = platform.engine().clone();

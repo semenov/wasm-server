@@ -6,6 +6,8 @@
 //! - `project.toml`: its settings (domains, databases, outbound, and each
 //!   app's path under the domains);
 //! - `code/APP.cwasm`: each app's code, compiled for this server;
+//! - `static/APP/`: each app's static files (a site, or a single-page
+//!   app), served before its code; an app may have only files;
 //! - `db/DB.db`: its SQLite databases, which its apps know by their own
 //!   names (`db.open("main")` is `shop/main` here);
 //! - `secrets.json` (owner-only): environment variables its apps see.
@@ -16,6 +18,7 @@
 //! reloads once; if the new version doesn't load, the old files come back.
 
 use crate::deployment::{AppSpec, Deployment};
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -44,6 +47,12 @@ pub struct AppSettings {
     pub websocket: Option<String>,
     /// Replaces the project's `outbound` for this app.
     pub outbound: Option<Vec<String>>,
+    /// It has static files (in the deploy's `files`).
+    #[serde(default, rename = "static")]
+    pub has_static: bool,
+    /// Without code: a single-page app, `index.html` for every page path.
+    #[serde(default)]
+    pub spa: bool,
 }
 
 /// `app.toml` of a single app deployed before projects: read as a project
@@ -94,7 +103,7 @@ fn read_project(dir: &Path, project: &str) -> Result<Option<(Settings, BTreeMap<
     if file.exists() {
         let text = std::fs::read_to_string(&file).map_err(|e| format_err!("{}: {e}", file.display()))?;
         let settings: Settings = toml::from_str(&text).map_err(|e| format_err!("{}: {e}", file.display()))?;
-        let code = settings.apps.keys().map(|a| (a.clone(), dir.join("code").join(format!("{a}.cwasm")))).collect();
+        let code = settings.apps.keys().map(|a| (a.clone(), dir.join("code").join(format!("{a}.cwasm")))).filter(|(_, f)| f.exists()).collect();
         return Ok(Some((settings, code)));
     }
     let (old, component) = (dir.join("app.toml"), dir.join("app.cwasm"));
@@ -103,7 +112,7 @@ fn read_project(dir: &Path, project: &str) -> Result<Option<(Settings, BTreeMap<
     }
     let text = std::fs::read_to_string(&old).map_err(|e| format_err!("{}: {e}", old.display()))?;
     let o: OldSettings = toml::from_str(&text).map_err(|e| format_err!("{}: {e}", old.display()))?;
-    let app = AppSettings { path: None, websocket: o.websocket, outbound: None };
+    let app = AppSettings { websocket: o.websocket, ..Default::default() };
     let settings = Settings { domains: o.domains, databases: o.databases, outbound: o.outbound, apps: [(project.to_string(), app)].into() };
     Ok(Some((settings, [(project.to_string(), component)].into())))
 }
@@ -122,8 +131,17 @@ pub fn add_to(deployment: &mut Deployment, data_dir: &Path) -> Result<()> {
             if deployment.apps.contains_key(&name) || deployment.sites.contains_key(&name) {
                 bail!("{name:?} is both in the deployment file and deployed over the API ({}); remove one", dir.display());
             }
+            let static_dir = s.has_static.then(|| dir.join("static").join(app));
+            let Some(component) = code.get(app) else {
+                // files only
+                let Some(static_dir) = static_dir else { continue };
+                let site = crate::deployment::SiteSpec { static_dir, domains: settings.domains.clone(), path: s.path.clone(), spa: s.spa, credits: None, tenant: None };
+                deployment.sites.insert(name, site);
+                continue;
+            };
             let spec = AppSpec {
-                component: code[app].clone(),
+                component: component.clone(),
+                static_dir,
                 databases: settings.databases.iter().map(|d| format!("{project}/{d}")).collect(),
                 db_aliases: settings.databases.iter().map(|d| (d.clone(), format!("{project}/{d}"))).collect(),
                 domains: settings.domains.clone(),
@@ -156,8 +174,13 @@ pub struct Upload {
     /// `create table if not exists ...`), by database name.
     #[serde(default)]
     pub schema: BTreeMap<String, String>,
-    /// Each app's component, base64.
+    /// Each app's component, base64 (an app with only files has none).
+    #[serde(default)]
     pub components: BTreeMap<String, String>,
+    /// Each app's static files: path in the site (`assets/app.js`) →
+    /// content, base64.
+    #[serde(default)]
+    pub files: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 /// The files of a deploy, in place; the previous ones (in `.previous/`), to
@@ -167,7 +190,7 @@ pub struct Staged {
 }
 
 /// The files a deploy replaces: the settings and the code, in either layout.
-const REPLACED: [&str; 4] = ["project.toml", "code", "app.toml", "app.cwasm"];
+const REPLACED: [&str; 5] = ["project.toml", "code", "static", "app.toml", "app.cwasm"];
 
 impl Staged {
     pub fn restore(self) {
@@ -211,12 +234,30 @@ pub fn stage(engine: &wasmtime::Engine, data_dir: &Path, project: &str, upload: 
                 bail!("app {app:?}: path {path:?} must start with / and not end with one (\"/api\")");
             }
         }
-        if !upload.components.contains_key(app) {
-            bail!("no component for app {app:?}");
+        let has_files = upload.files.get(app).is_some_and(|f| !f.is_empty());
+        if a.has_static != has_files {
+            bail!("app {app:?}: `static` says {}, and the deploy has {} files for it", a.has_static, if has_files { "some" } else { "no" });
+        }
+        if !upload.components.contains_key(app) && !has_files {
+            bail!("app {app:?} has neither code nor files");
+        }
+        if a.spa && upload.components.contains_key(app) {
+            bail!("app {app:?}: `spa` is for an app of files only; with code, the code answers what isn't a file");
         }
     }
-    if let Some(extra) = upload.components.keys().find(|a| !s.apps.contains_key(*a)) {
-        bail!("a component for {extra:?}, which isn't one of the project's apps");
+    if let Some(extra) = upload.components.keys().chain(upload.files.keys()).find(|a| !s.apps.contains_key(*a)) {
+        bail!("code or files for {extra:?}, which isn't one of the project's apps");
+    }
+    let mut files: Vec<(String, std::path::PathBuf, Vec<u8>)> = Vec::new();
+    for (app, list) in &upload.files {
+        for (path, b64) in list {
+            let ok = !path.is_empty() && !path.starts_with('/') && path.len() <= 512 && path.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != ".." && !seg.contains('\\'));
+            if !ok {
+                bail!("app {app:?}: {path:?} isn't a valid file path in a site");
+            }
+            let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim()).map_err(|e| format_err!("app {app:?}: {path}: not base64: {e}"))?;
+            files.push((app.clone(), std::path::PathBuf::from(path), bytes));
+        }
     }
     for db in &s.databases {
         if !valid_db(db) {
@@ -228,7 +269,6 @@ pub fn stage(engine: &wasmtime::Engine, data_dir: &Path, project: &str, upload: 
             bail!("the schema is for database {db:?}, which isn't in the project's databases");
         }
     }
-    use base64::Engine as _;
     let mut compiled = BTreeMap::new();
     for (app, b64) in &upload.components {
         let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim()).map_err(|e| format_err!("app {app:?}: the component isn't base64: {e}"))?;
@@ -265,6 +305,11 @@ pub fn stage(engine: &wasmtime::Engine, data_dir: &Path, project: &str, upload: 
         std::fs::create_dir_all(dir.join("code"))?;
         for (app, code) in &compiled {
             write_atomic(&dir.join("code").join(format!("{app}.cwasm")), code)?;
+        }
+        for (app, path, bytes) in &files {
+            let file = dir.join("static").join(app).join(path);
+            std::fs::create_dir_all(file.parent().unwrap())?;
+            std::fs::write(&file, bytes)?;
         }
         write_atomic(&dir.join("project.toml"), toml::to_string(s)?.as_bytes())
     })();

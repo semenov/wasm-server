@@ -117,6 +117,11 @@ pub struct SiteSpec {
     pub static_dir: PathBuf,
     #[serde(default)]
     pub domains: Vec<String>,
+    /// The part of its domains it serves, as for apps.
+    pub path: Option<String>,
+    /// A single-page app: paths that aren't files get `index.html`.
+    #[serde(default)]
+    pub spa: bool,
     pub credits: Option<f64>,
     pub tenant: Option<String>,
 }
@@ -238,10 +243,10 @@ impl Deployment {
                 bail!("tenant {name:?}: token_sha256 must be 64 hex characters (wasm-server hash-token TOKEN)");
             }
         }
-        for (name, app) in &self.apps {
-            if let Some(path) = &app.path {
+        for (name, path) in self.apps.iter().map(|(n, a)| (n, &a.path)).chain(self.sites.iter().map(|(n, s)| (n, &s.path))) {
+            if let Some(path) = path {
                 if !valid_path(path) {
-                    bail!("app {name:?}: path {path:?} must start with / and not end with one (\"/api\")");
+                    bail!("{name:?}: path {path:?} must start with / and not end with one (\"/api\")");
                 }
             }
         }
@@ -249,7 +254,7 @@ impl Deployment {
             .apps
             .iter()
             .map(|(n, a)| (n, &a.domains, a.path.as_deref().unwrap_or("/")))
-            .chain(self.sites.iter().map(|(n, s)| (n, &s.domains, "/")));
+            .chain(self.sites.iter().map(|(n, s)| (n, &s.domains, s.path.as_deref().unwrap_or("/"))));
         for (name, list, path) in all_domains {
             for domain in list {
                 if let Some(other) = domains.insert((domain.to_ascii_lowercase(), path.to_string()), name.clone()) {

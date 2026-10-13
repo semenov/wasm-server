@@ -71,7 +71,7 @@ pub fn deployment(f: Flags) -> Result<Deployment> {
     for (name, dir) in f.statics {
         match d.apps.get_mut(&name) {
             Some(a) => a.static_dir = Some(PathBuf::from(dir)),
-            None => drop(d.sites.insert(name, SiteSpec { static_dir: PathBuf::from(dir), domains: Vec::new(), credits: None, tenant: None })),
+            None => drop(d.sites.insert(name, SiteSpec { static_dir: PathBuf::from(dir), domains: Vec::new(), path: None, spa: false, credits: None, tenant: None })),
         }
     }
     for (host, name) in f.domains {

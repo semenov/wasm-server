@@ -23,6 +23,9 @@ pub struct StaticSite {
     /// URL path ("/css/app.css") → file.
     files: HashMap<String, StaticFile>,
     pub total_bytes: u64,
+    /// A single-page app: a GET for a path that isn't a file (and doesn't
+    /// look like one) gets `/index.html`, for the app's router to handle.
+    pub spa: bool,
 }
 
 struct StaticFile {
@@ -35,7 +38,7 @@ struct StaticFile {
 
 impl StaticSite {
     pub fn load(dir: &Path) -> Result<Self> {
-        let mut site = StaticSite { files: HashMap::new(), total_bytes: 0 };
+        let mut site = StaticSite { files: HashMap::new(), total_bytes: 0, spa: false };
         if !dir.is_dir() {
             bail!("{} is not a directory", dir.display());
         }
@@ -86,10 +89,24 @@ impl StaticSite {
 
     /// Serves `path` if it is a file of this site (GET and HEAD only).
     pub fn serve(&self, method: &Method, path: &str, headers: &HeaderMap) -> Option<Response<HyperOutgoingBody>> {
+        let file = self.lookup(path)?;
+        self.respond(method, file, headers)
+    }
+
+    /// For a single-page app, `/index.html` in place of a missing page:
+    /// not for paths with an extension (`/logo.png` stays a 404).
+    pub fn fallback(&self, method: &Method, path: &str, headers: &HeaderMap) -> Option<Response<HyperOutgoingBody>> {
+        let last = path.split('?').next().unwrap_or("").rsplit('/').next().unwrap_or("");
+        if !self.spa || last.contains('.') {
+            return None;
+        }
+        self.respond(method, self.files.get("/index.html")?, headers)
+    }
+
+    fn respond(&self, method: &Method, file: &StaticFile, headers: &HeaderMap) -> Option<Response<HyperOutgoingBody>> {
         if method != Method::GET && method != Method::HEAD {
             return None;
         }
-        let file = self.lookup(path)?;
         let mut resp = Response::new(crate::server::body(Bytes::new()));
         let h = resp.headers_mut();
         h.insert(header::ETAG, file.etag.clone());
