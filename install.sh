@@ -83,10 +83,11 @@ if [ -n "$BINARY" ]; then
 else
   command -v curl >/dev/null 2>&1 || die "curl is needed to download the server (apt-get install curl)"
   if [ "$VERSION" = latest ]; then BASE="https://github.com/$REPO/releases/latest/download"; else BASE="https://github.com/$REPO/releases/download/$VERSION"; fi
-  curl -fsSL "$BASE/wasm-server-linux-$ARCH.gz" -o "$TMP/wasm-server.gz" || die "can't download $BASE/wasm-server-linux-$ARCH.gz"
+  ASSET=wasm-server-linux-$ARCH.gz
+  curl -fsSL "$BASE/$ASSET" -o "$TMP/$ASSET" || die "can't download $BASE/$ASSET"
   curl -fsSL "$BASE/SHA256SUMS" -o "$TMP/SHA256SUMS" || die "can't download the checksums"
-  (cd "$TMP" && grep " wasm-server-linux-$ARCH.gz\$" SHA256SUMS | sha256sum -c - >/dev/null) || die "the download doesn't match its checksum"
-  gunzip "$TMP/wasm-server.gz"
+  (cd "$TMP" && grep " $ASSET\$" SHA256SUMS | sha256sum -c - >/dev/null) || die "the download doesn't match its checksum"
+  gunzip -c "$TMP/$ASSET" > "$TMP/wasm-server"
 fi
 chmod 755 "$TMP/wasm-server"
 "$TMP/wasm-server" --help >/dev/null 2>&1 || die "the binary doesn't run here (wrong architecture or C library?)"
