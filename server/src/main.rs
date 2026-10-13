@@ -8,6 +8,7 @@ mod bindings;
 mod client;
 mod cache;
 mod db;
+mod dbtools;
 mod deployment;
 mod engine;
 mod flags;
@@ -17,6 +18,7 @@ mod loader;
 mod metrics;
 mod logs;
 mod managed;
+mod migrations;
 mod outbound;
 mod platform;
 mod routes;
@@ -552,6 +554,7 @@ fn main() -> Result<()> {
                 outbound: Arc::default(),
                 db_aliases: Arc::default(),
                 project: None,
+                cpu_limit: None,
             };
             let component = app::load_component(&engine, "bench", &app)?;
             let app = app::App::new(&linker, 0, "bench", &component, config)?;

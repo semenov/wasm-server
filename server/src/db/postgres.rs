@@ -501,7 +501,48 @@ impl Cursor {
 }
 
 async fn prepare(client: &Object, statement: &str) -> Result<Statement, Error> {
-    client.prepare_cached(statement).await.map_err(query_error)
+    client.prepare_cached(&dollar_params(statement)).await.map_err(query_error)
+}
+
+/// The same SQL runs on SQLite and Postgres: apps may write SQLite's `?`
+/// (or `?2`), which become `$1`, `$2`... here. Outside string literals,
+/// quoted identifiers and comments; a statement that already uses `$N` is
+/// left alone (so jsonb's `?` operators still work there).
+fn dollar_params(sql: &str) -> std::borrow::Cow<'_, str> {
+    if !sql.contains('?') {
+        return sql.into();
+    }
+    let bytes = sql.as_bytes();
+    let mut out = String::with_capacity(sql.len() + 8);
+    let (mut i, mut n, mut has_dollar) = (0, 0, false);
+    while i < bytes.len() {
+        let c = bytes[i];
+        let end = match c {
+            b'\'' | b'"' => sql[i + 1..].find(c as char).map_or(bytes.len(), |k| i + 1 + k + 1),
+            b'-' if bytes.get(i + 1) == Some(&b'-') => sql[i..].find('\n').map_or(bytes.len(), |k| i + k),
+            b'/' if bytes.get(i + 1) == Some(&b'*') => sql[i + 2..].find("*/").map_or(bytes.len(), |k| i + 2 + k + 2),
+            b'$' if bytes.get(i + 1).is_some_and(u8::is_ascii_digit) => {
+                has_dollar = true;
+                i + 1
+            }
+            b'?' => {
+                let digits = sql[i + 1..].bytes().take_while(u8::is_ascii_digit).count();
+                if digits > 0 {
+                    out.push('$');
+                    out.push_str(&sql[i + 1..i + 1 + digits]);
+                } else {
+                    n += 1;
+                    out.push_str(&format!("${n}"));
+                }
+                i += 1 + digits;
+                continue;
+            }
+            _ => i + sql[i..].chars().next().unwrap().len_utf8(),
+        };
+        out.push_str(&sql[i..end]);
+        i = end;
+    }
+    if has_dollar { sql.into() } else { out.into() }
 }
 
 async fn start_stream(client: &Object, statement: &str, params: &[Value]) -> Result<(Vec<String>, RowStream), Error> {
@@ -612,4 +653,18 @@ fn convert_row(row: &Row) -> Result<Vec<Value>, Error> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod dollar_tests {
+    use super::dollar_params;
+
+    #[test]
+    fn question_marks_become_numbers() {
+        assert_eq!(dollar_params("select 1"), "select 1");
+        assert_eq!(dollar_params("select * from t where a = ? and b > ?"), "select * from t where a = $1 and b > $2");
+        assert_eq!(dollar_params("update t set a = ?2 where id = ?1"), "update t set a = $2 where id = $1");
+        assert_eq!(dollar_params("select '?', \"?\", ? -- ?\n, ? /* ? */"), "select '?', \"?\", $1 -- ?\n, $2 /* ? */");
+        assert_eq!(dollar_params("select data ? 'k' from t where id = $1"), "select data ? 'k' from t where id = $1");
+    }
 }

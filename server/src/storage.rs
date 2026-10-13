@@ -260,6 +260,14 @@ pub fn run(data_dir: &Path, project: &str, call: &J) -> Result<J, String> {
     }
 }
 
+/// A file's content and details, for the project's owner (`plumb files
+/// pull`), public or not.
+pub fn read_file(data_dir: &Path, project: &str, key: &str) -> Result<Option<(Vec<u8>, Object)>, String> {
+    let s = store(data_dir, project)?;
+    let Some(info) = s.info(key)? else { return Ok(None) };
+    Ok(s.get(key)?.map(|data| (data, info)))
+}
+
 impl RequestState {
     async fn storage_call(&mut self, call: J) -> Result<J, String> {
         let Some(project) = self.project.clone() else {

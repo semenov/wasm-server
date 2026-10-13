@@ -173,7 +173,7 @@ let s = stats::summary(code);   // runs in a fresh `stats` instance, with stats'
 
 | Interface | What it gives a function |
 |---|---|
-| `sql` | Databases by name: queries, transactions, cursors. SQLite or Postgres behind the same API |
+| `sql` | Databases by name: queries, transactions, cursors. SQLite or Postgres behind the same API; `?` and `$1` work on both (each is numbered for the other) |
 | `cache` | An in-memory cache per app: get/set with expiry, `add` (only if absent), atomic `incr` |
 | `queue` | `send(queue, payload, delay-ms)`: durable, delivered at least once to the queue's consumer |
 | `events` | (export) `handle(event)` for queue messages and cron ticks; an error means "retry later" |
@@ -448,8 +448,23 @@ schema.
   no kept release uses are removed.
 - **Cluster workers** fetch a release's `.wasm` by hash from the primary
   and compile it themselves.
+- **Migrations** are steps that run once per server, in order, each a
+  Plumb file built into a component per phase (`server/src/migrations.rs`):
+  `before` runs during the deploy after a snapshot of the project's
+  databases (`apps/NAME/backups/`), and a failure refuses the deploy;
+  `after` runs in the background once the release is live. They run as
+  one-off instances with the project's databases, files, outgoing HTTP and
+  secrets, with long limits (10 minutes, 6 hours).
+  `apps/NAME/migrations.jsonl` is the ledger (`GET
+  projects/NAME/migrations`, `plumb migrations`). Deploys of one project
+  run one at a time.
 - **Not in releases:** data (databases, users' files) and secrets, so a
   rollback doesn't bring back an old key.
+- **Taking the data away** (`server/src/dbtools.rs`): `GET
+  projects/NAME/databases/DB/snapshot` (a plain SQLite file, taken with
+  `VACUUM INTO` while apps run), `.../dump` (SQL), `POST .../query`
+  (`{"sql"}`), `GET projects/NAME/files` and `files/KEY` (the users'
+  files as they are). `plumb db` and `plumb files pull` use them.
 - `POST projects/NAME/deploy` takes the same with every part inline
   (base64), for scripts.
 - **Paths:** apps of a project share its domains, each taking a `path`

@@ -178,6 +178,8 @@ pub struct AppConfig {
     pub db_aliases: Arc<HashMap<String, String>>,
     /// The project it belongs to (deployed apps): its files.
     pub project: Option<Arc<str>>,
+    /// Replaces the server's per-request CPU limit (migrations).
+    pub cpu_limit: Option<Duration>,
 }
 
 impl App {
@@ -207,7 +209,7 @@ impl App {
                 http: WasiHttpCtx::new(),
                 limits: Limits { max_memory: limits.max_memory, memory: 0 },
                 db: DbCtx::new(env.pools.clone(), self.config.databases.clone(), self.config.db_aliases.clone(), self.config.db_timeout),
-                cpu: CpuMeter::new(limits.cpu_limit),
+                cpu: CpuMeter::new(self.config.cpu_limit.unwrap_or(limits.cpu_limit)),
                 cache: self.config.cache.clone(),
                 env: env.clone(),
                 links: self.config.links.clone(),

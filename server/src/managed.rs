@@ -77,15 +77,36 @@ pub struct Release {
     /// table if not exists ...`).
     #[serde(default)]
     pub schema: BTreeMap<String, String>,
+    /// Steps run once per server, in order (`migrations.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub migrations: Vec<Migration>,
     /// What built it (`plumb 0.1.0`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compiler: Option<String>,
 }
 
+/// A migration: a Plumb file with `fn before()` (runs before the release
+/// goes live) and/or `fn after()` (after, in the background), each built
+/// into a component.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Migration {
+    /// `20261013120000_add_avatars.plumb`: the version, `_`, a name.
+    pub file: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+}
+
 impl Release {
     /// Every blob it needs.
     pub fn blobs(&self) -> impl Iterator<Item = &String> {
-        self.components.values().chain(self.files.values().flat_map(|f| f.values())).chain(self.schema.values())
+        self.components
+            .values()
+            .chain(self.files.values().flat_map(|f| f.values()))
+            .chain(self.schema.values())
+            .chain(self.migrations.iter().flat_map(|m| m.before.iter().chain(m.after.iter())))
     }
 }
 
@@ -260,6 +281,23 @@ pub fn check(data_dir: &Path, project: &str, r: &Release, taken: &[String]) -> R
             bail!("the schema is for database {db:?}, which isn't in the project's databases");
         }
     }
+    if s.apps.contains_key("migrations") {
+        bail!("an app can't be named \"migrations\": the project's migrations run under that name");
+    }
+    let mut versions = HashSet::new();
+    for m in &r.migrations {
+        let (v, rest) = m.file.split_once('_').unwrap_or(("", ""));
+        let ok = !v.is_empty() && v.len() <= 32 && v.bytes().all(|b| b.is_ascii_digit()) && rest.ends_with(".plumb") && rest.len() > 6 && !m.file.contains('/');
+        if !ok {
+            bail!("migration {:?}: name it VERSION_NAME.plumb, the version being digits (20261013120000_add_avatars.plumb)", m.file);
+        }
+        if !versions.insert(v) {
+            bail!("two migrations have version {v}");
+        }
+        if m.before.is_none() && m.after.is_none() {
+            bail!("migration {:?} has neither `before` nor `after`", m.file);
+        }
+    }
     let missing = missing_blobs(data_dir, r);
     if !missing.is_empty() {
         bail!("the store doesn't have {} of the release's parts (upload them first): {}", missing.len(), missing.join(", "));
@@ -272,11 +310,16 @@ pub fn missing_blobs(data_dir: &Path, r: &Release) -> Vec<String> {
     r.blobs().filter(|h| seen.insert(*h) && !store::has_blob(data_dir, h)).cloned().collect()
 }
 
-/// Gets a checked release ready to run: compiles its components, lays out
-/// its sites, applies its schema. Blocking.
+/// Gets a checked release ready to run: compiles its components and
+/// migrations, lays out its sites, applies its schema. Blocking.
 pub fn prepare(data_dir: &Path, project: &str, r: &Release) -> Result<()> {
     for (app, hash) in &r.components {
         store::compiled(data_dir, hash).map_err(|e| format_err!("app {app:?}: {e}"))?;
+    }
+    for m in &r.migrations {
+        for hash in m.before.iter().chain(m.after.iter()) {
+            store::compiled(data_dir, hash).map_err(|e| format_err!("migration {}: {e}", m.file))?;
+        }
     }
     for files in r.files.values().filter(|f| !f.is_empty()) {
         store::site_dir(data_dir, files)?;
@@ -291,6 +334,16 @@ pub fn prepare(data_dir: &Path, project: &str, r: &Release) -> Result<()> {
         conn.execute_batch(&sql).map_err(|e| format_err!("the schema of database {db:?} failed: {e}"))?;
     }
     Ok(())
+}
+
+/// The project's directory.
+pub fn dir_of(data_dir: &Path, project: &str) -> PathBuf {
+    project_dir(data_dir, project)
+}
+
+/// The environment variables a project's apps see.
+pub fn secrets(data_dir: &Path, project: &str) -> Result<BTreeMap<String, String>> {
+    read_secrets(&project_dir(data_dir, project))
 }
 
 /// A line of a project's history.
@@ -376,7 +429,15 @@ impl Upload {
             Ok(h)
         };
         let b64 = |s: &str, what: &str| base64::engine::general_purpose::STANDARD.decode(s.trim()).map_err(|e| format_err!("{what}: not base64: {e}"));
-        let mut r = Release { project: project.to_string(), settings: self.settings, components: BTreeMap::new(), files: BTreeMap::new(), schema: BTreeMap::new(), compiler: None };
+        let mut r = Release {
+            project: project.to_string(),
+            settings: self.settings,
+            components: BTreeMap::new(),
+            files: BTreeMap::new(),
+            schema: BTreeMap::new(),
+            migrations: Vec::new(),
+            compiler: None,
+        };
         for (app, c) in self.components {
             let bytes = b64(&c, &format!("app {app:?}"))?;
             if !bytes.starts_with(b"\0asm") {

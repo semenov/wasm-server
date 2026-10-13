@@ -24,6 +24,14 @@ use wasmtime::{Engine, Result, bail, format_err};
 /// The engine components are compiled for; set at startup.
 pub static ENGINE: OnceLock<Engine> = OnceLock::new();
 
+/// A temporary name next to `path`, unique within this process too (two
+/// deploys may write the same part at once).
+fn tmp_next_to(path: &Path) -> PathBuf {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    path.with_extension(format!("tmp{}-{n}", std::process::id()))
+}
+
 pub fn sha256_hex(data: &[u8]) -> String {
     crate::versions::hex(&Sha256::digest(data))
 }
@@ -58,7 +66,7 @@ pub fn put_blob(data_dir: &Path, hash: &str, data: &[u8]) -> Result<()> {
         return Ok(());
     }
     std::fs::create_dir_all(path.parent().unwrap())?;
-    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    let tmp = tmp_next_to(&path);
     std::fs::write(&tmp, data)?;
     std::fs::rename(&tmp, &path)?;
     Ok(())
@@ -100,7 +108,7 @@ pub fn put_release(data_dir: &Path, manifest: &[u8]) -> Result<String> {
     let path = release_path(data_dir, &id);
     if !path.exists() {
         std::fs::create_dir_all(path.parent().unwrap())?;
-        let tmp = path.with_extension("tmp");
+        let tmp = tmp_next_to(&path);
         std::fs::write(&tmp, manifest)?;
         std::fs::rename(&tmp, &path)?;
     }
@@ -131,7 +139,7 @@ pub fn compiled(data_dir: &Path, hash: &str) -> Result<PathBuf> {
     let bytes = read_blob(data_dir, hash)?;
     let code = engine.precompile_component(&bytes).map_err(|e| format_err!("the component {hash} doesn't compile: {e:?}"))?;
     std::fs::create_dir_all(path.parent().unwrap())?;
-    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    let tmp = tmp_next_to(&path);
     std::fs::write(&tmp, code)?;
     std::fs::rename(&tmp, &path)?;
     Ok(path)
@@ -144,8 +152,7 @@ pub fn site_dir(data_dir: &Path, files: &BTreeMap<String, String>) -> Result<Pat
     if dir.join(".complete").exists() {
         return Ok(dir);
     }
-    let tmp = dir.with_extension(format!("tmp{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
+    let tmp = tmp_next_to(&dir);
     for (path, hash) in files {
         let target = tmp.join(path);
         std::fs::create_dir_all(target.parent().unwrap())?;
@@ -155,8 +162,13 @@ pub fn site_dir(data_dir: &Path, files: &BTreeMap<String, String>) -> Result<Pat
         }
     }
     std::fs::write(tmp.join(".complete"), b"")?;
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::rename(&tmp, &dir)?;
+    if std::fs::rename(&tmp, &dir).is_err() {
+        // made meanwhile by another deploy
+        let _ = std::fs::remove_dir_all(&tmp);
+        if !dir.join(".complete").exists() {
+            bail!("can't lay out the site in {}", dir.display());
+        }
+    }
     Ok(dir)
 }
 

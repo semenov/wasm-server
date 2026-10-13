@@ -14,6 +14,9 @@
 //! | `projects/NAME/releases` | POST | admin | `{"release": {...}, "note"}`: run a release whose parts are stored (`managed.rs`) |
 //! | `projects/NAME/releases` | GET | any | the releases it ran, newest first, and the current one |
 //! | `projects/NAME/rollback[?to=ID]` | POST | admin | back to the previous (or given) release |
+//! | `projects/NAME/databases` | GET | admin | its databases; `databases/DB/snapshot` (a SQLite file), `databases/DB/dump` (SQL), POST `databases/DB/query` `{"sql"}` |
+//! | `projects/NAME/files[?prefix=&after=]` | GET | admin | its users' files; `files/KEY`: one, as it is |
+//! | `projects/NAME/migrations` | GET | any | every run of its migrations' steps, with results (`migrations.rs`) |
 //! | `projects/NAME/deploy` | POST | admin | a release with every part inline (base64) |
 //! | `releases/ID` | GET | any | a release's manifest |
 //! | `projects/NAME/secrets` | GET, PUT | admin | a deployed project's secret names; set or remove secrets |
@@ -180,6 +183,64 @@ async fn route(platform: Arc<Platform>, req: Request<Incoming>, path: &str, who:
         (&Method::POST, ["projects" | "apps", project, "deploy"]) if who == Principal::Admin => deploy_managed(platform, req, project.to_string()).await,
         (&Method::POST, ["projects", project, "releases"]) if who == Principal::Admin => deploy_release(platform, req, project.to_string()).await,
         (&Method::GET, ["projects", project, "releases"]) => list_releases(&platform, project),
+        // the project's data, for its owner to take away or look into
+        (&Method::GET, ["projects", project, "databases"]) if who == Principal::Admin => json(StatusCode::OK, crate::dbtools::list(&platform.data_dir, project).to_string()),
+        (&Method::GET, ["projects", project, "databases", db, what @ ("snapshot" | "dump")]) if who == Principal::Admin => {
+            let file = match crate::dbtools::db_file(&platform.data_dir, project, db) {
+                Ok(f) => f,
+                Err(e) => return error(StatusCode::NOT_FOUND, &e.to_string()),
+            };
+            let what = what.to_string();
+            let result = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+                if what == "snapshot" { crate::dbtools::snapshot(&file) } else { crate::dbtools::dump(&file).map(String::into_bytes) }
+            })
+            .await;
+            match result {
+                Ok(Ok(b)) => respond(StatusCode::OK, "application/octet-stream", b),
+                Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+                Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+            }
+        }
+        (&Method::POST, ["projects", project, "databases", db, "query"]) if who == Principal::Admin => {
+            let file = match crate::dbtools::db_file(&platform.data_dir, project, db) {
+                Ok(f) => f,
+                Err(e) => return error(StatusCode::NOT_FOUND, &e.to_string()),
+            };
+            let bytes = match body_bytes(req, 1 << 20).await {
+                Ok(b) => b,
+                Err(resp) => return resp,
+            };
+            let sql = serde_json::from_slice::<serde_json::Value>(&bytes).ok().and_then(|v| v.get("sql").and_then(|s| s.as_str()).map(str::to_string)).unwrap_or_default();
+            match tokio::task::spawn_blocking(move || crate::dbtools::query(&file, &sql, 1000)).await {
+                Ok(Ok(v)) => json(StatusCode::OK, v.to_string()),
+                Ok(Err(e)) => error(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
+                Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+            }
+        }
+        (&Method::GET, ["projects", project, "files"]) if who == Principal::Admin => {
+            let arg = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(&format!("{k}="))).unwrap_or("").to_string();
+            let call = serde_json::json!({ "op": "list", "prefix": arg("prefix"), "after": arg("after"), "limit": 1000 });
+            let (data_dir, p) = (platform.data_dir.clone(), project.to_string());
+            match tokio::task::spawn_blocking(move || crate::storage::run(&data_dir, &p, &call)).await {
+                Ok(Ok(v)) => json(StatusCode::OK, serde_json::json!({ "files": v }).to_string()),
+                Ok(Err(e)) => error(StatusCode::NOT_FOUND, &e),
+                Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+            }
+        }
+        (&Method::GET, ["projects", project, "files", ..]) if who == Principal::Admin => {
+            let key = path.splitn(4, '/').nth(3).unwrap_or("").to_string();
+            let (data_dir, p) = (platform.data_dir.clone(), project.to_string());
+            match tokio::task::spawn_blocking(move || crate::storage::read_file(&data_dir, &p, &key)).await {
+                Ok(Ok(Some((data, _)))) => respond(StatusCode::OK, "application/octet-stream", data),
+                Ok(Ok(None)) => error(StatusCode::NOT_FOUND, "no such file"),
+                Ok(Err(e)) => error(StatusCode::NOT_FOUND, &e),
+                Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+            }
+        }
+        (&Method::GET, ["projects", project, "migrations"]) => {
+            let runs = crate::migrations::ledger(&platform.data_dir, project);
+            json(StatusCode::OK, serde_json::json!({ "project": project, "runs": runs }).to_string())
+        }
         (&Method::POST, ["projects", project, "rollback"]) if who == Principal::Admin => {
             let to = query.split('&').find_map(|kv| kv.strip_prefix("to=")).map(str::to_string);
             rollback_project(platform, project.to_string(), to).await
@@ -359,15 +420,18 @@ async fn body_bytes(req: Request<Incoming>, limit: usize) -> Result<Bytes, Respo
 /// new, applies its schema, points the project at it and reloads; if that
 /// fails, the project goes back to the release it ran.
 async fn activate(platform: Arc<Platform>, project: String, release: crate::managed::Release, note: String) -> Response<HyperOutgoingBody> {
+    // one deploy of a project at a time
+    static LOCKS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = std::sync::OnceLock::new();
+    let lock = LOCKS.get_or_init(Default::default).lock().unwrap().entry(project.clone()).or_default().clone();
+    let _deploying = lock.lock().await;
     let taken = fixed_names(&platform);
     let (data_dir, p) = (platform.data_dir.clone(), project.clone());
+    let r = release.clone();
     let prepared = tokio::task::spawn_blocking(move || -> Result<(String, Option<String>)> {
-        crate::managed::check(&data_dir, &p, &release, &taken)?;
-        let id = crate::managed::put_release(&data_dir, &release)?;
-        crate::managed::prepare(&data_dir, &p, &release)?;
-        let previous = crate::managed::current(&data_dir, &p);
-        crate::managed::set_current(&data_dir, &p, Some(&id))?;
-        Ok((id, previous))
+        crate::managed::check(&data_dir, &p, &r, &taken)?;
+        let id = crate::managed::put_release(&data_dir, &r)?;
+        crate::managed::prepare(&data_dir, &p, &r)?;
+        Ok((id, crate::managed::current(&data_dir, &p)))
     })
     .await;
     let (id, previous) = match prepared {
@@ -375,18 +439,53 @@ async fn activate(platform: Arc<Platform>, project: String, release: crate::mana
         Ok(Err(e)) => return error(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
         Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
-    let resp = reload(platform.clone(), vec![project.clone()]).await;
     let data_dir = platform.data_dir.clone();
+    // the migrations' `before` steps, after a snapshot of the databases
+    let mut notes: Vec<String> = Vec::new();
+    let before: Vec<crate::managed::Migration> = crate::migrations::pending(&data_dir, &project, &release, "before").into_iter().cloned().collect();
+    if !before.is_empty() {
+        let (d, p, r, label) = (data_dir.clone(), project.clone(), release.clone(), before[0].file.split('_').next().unwrap_or("").to_string());
+        match tokio::task::spawn_blocking(move || crate::migrations::snapshot(&d, &p, &r, &label)).await {
+            Ok(Ok(snaps)) if !snaps.is_empty() => notes.push(format!("databases saved first: {}", snaps.join(", "))),
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return error(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
+            Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        }
+        for m in &before {
+            if let Err(e) = crate::migrations::run(&platform, &project, &release, m, "before").await {
+                let mut msg = format!("migration {} failed before the release went live, so it didn't: {e}", m.file);
+                if !notes.is_empty() {
+                    msg += &format!(" ({})", notes.join("; "));
+                }
+                return error(StatusCode::UNPROCESSABLE_ENTITY, &msg);
+            }
+            notes.push(format!("migration {}: `before` done", m.file));
+        }
+    }
+    if let Err(e) = crate::managed::set_current(&data_dir, &project, Some(&id)) {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
+    }
+    let resp = reload(platform.clone(), vec![project.clone()]).await;
     if resp.status() != StatusCode::OK {
         let _ = crate::managed::set_current(&data_dir, &project, previous.as_deref());
+        if !before.is_empty() {
+            // the data moved on; say so with the refusal
+            let msg = format!("{}; the migrations' `before` steps stay done: {}", String::from_utf8_lossy(&resp.into_body().collect().await.map(|b| b.to_bytes()).unwrap_or_default()).trim(), notes.join("; "));
+            return error(StatusCode::UNPROCESSABLE_ENTITY, &msg);
+        }
         return resp;
     }
     let unchanged = previous.as_deref() == Some(id.as_str());
     if !unchanged {
-        let (p, i) = (project.clone(), id.clone());
-        let _ = tokio::task::spawn_blocking(move || crate::managed::record(&data_dir, &p, &i, &note)).await;
+        let (d, p, i) = (data_dir.clone(), project.clone(), id.clone());
+        let _ = tokio::task::spawn_blocking(move || crate::managed::record(&d, &p, &i, &note)).await;
     }
-    json(StatusCode::OK, serde_json::json!({ "project": project, "release": id, "previous": previous, "unchanged": unchanged }).to_string())
+    let after: Vec<String> = crate::migrations::pending(&data_dir, &project, &release, "after").iter().map(|m| m.file.clone()).collect();
+    if !after.is_empty() {
+        notes.push(format!("running `after` in the background: {} (plumb migrations shows how they went)", after.join(", ")));
+        crate::migrations::spawn_after(platform.clone(), project.clone(), release);
+    }
+    json(StatusCode::OK, serde_json::json!({ "project": project, "release": id, "previous": previous, "unchanged": unchanged, "notes": notes }).to_string())
 }
 
 /// `{"release": {...}, "note": "..."}`: a release whose parts are in the
