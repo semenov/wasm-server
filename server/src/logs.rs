@@ -54,6 +54,7 @@ pub fn write(app: &str, text: &str) {
         out.push('\n');
         eprintln!("{app}: {line}");
     }
+    crate::cluster::forward_log(app, text);
     let Some(file_path) = path(app) else { return };
     let files = FILES.get_or_init(Mutex::default);
     let mut files = files.lock().unwrap();

@@ -467,6 +467,60 @@ Besides the apps in the deployment file, the admin can create apps over
 - **Waiting isn't CPU:** time an instance waits on the database, other
   functions or outgoing HTTP doesn't count against `--cpu-limit-ms`.
 
+## Several servers: a cluster and autoscaling
+
+One server can grow into several without changing the apps
+(`server/src/cluster.rs`, `server/src/autoscale.rs`):
+
+```sh
+# the primary: everything with state, and the workers' door (a private address)
+wasm-server serve --config platform.toml --https --listen 0.0.0.0:443 \
+  --cluster-listen 10.0.0.2:7070 --cluster-token "$CLUSTER_TOKEN"
+# a worker: runs app code only
+WASM_SERVER_CLUSTER_TOKEN=... wasm-server serve --join http://10.0.0.2:7070 \
+  --listen 0.0.0.0:8080 --advertise http://10.0.0.3:8080
+```
+
+- **The primary keeps the state:** HTTPS, databases, queues and cron,
+  WebSockets, static files, logs, metrics and billing. Workers take its
+  apps (settings, secrets, components it compiled) and check for changes
+  every 2 seconds; a deploy reaches them by itself.
+- **Requests** go to the node with the fewest requests in flight per core,
+  the primary included, and only to workers that run the current apps. A
+  worker that can't be reached gets nothing; the request runs on the
+  primary. Workers accept requests only from the primary.
+- **A worker's database calls and queue messages** go to the primary over
+  kept connections; its transactions are held there by id (rolled back
+  after 30 s idle). Cursors aren't available on workers yet.
+- **Logs and counters** come back with the heartbeat, so `/_platform/`
+  (logs, metrics, charts, billing) covers the whole cluster;
+  `GET /_platform/cluster` lists the nodes.
+- **Same binary everywhere:** workers run the primary's compiled
+  components, so they run the same wasm-server version on the same CPU
+  architecture (a cloud worker downloads it from the primary).
+
+Measured on one Mac (primary and two workers, 2 threads each, oha with 64
+connections): 8.8k requests/s reading SQLite through the cluster, 3,000
+inserts and 2,000 transactions from workers all in the database, no
+errors.
+
+**Autoscaling** (`--autoscale local|digitalocean` on the primary): the
+cluster's CPU use (every process, as a share of all cores) is sampled every
+15 s. At 70% (`--autoscale-high`) for 2 minutes a worker is added, up to
+`--autoscale-max` (2); under 30% (`--autoscale-low`) for 10 minutes the
+newest is drained (no new requests, the running ones finish) and removed,
+down to `--autoscale-min` (0); 3 minutes between decisions.
+
+- `local` starts worker processes on the same machine: for trying it out
+  (tested: two workers added under load, both removed after it, no failed
+  requests).
+- `digitalocean` creates droplets (`--autoscale-size s-2vcpu-4gb`,
+  `--autoscale-region fra1`, `DIGITALOCEAN_TOKEN`) that download the
+  binary from the primary and join it as a service, and deletes them. At
+  start it prints the price per droplet and the most a month could cost.
+  The droplets must reach the cluster port, and the primary their port
+  8080, on a private network. Not tried against the real API yet.
+
 ## HTTPS
 
 `--https` serves `--listen` over TLS with certificates from Let's Encrypt for

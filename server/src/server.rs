@@ -32,15 +32,19 @@ pub struct ServeOpts {
     pub job_workers: usize,
     /// HTTPS on `listen` (`--https`): certificates from `tls.rs`.
     pub tls: Option<Arc<rustls::ServerConfig>>,
+    /// A cluster worker: jobs, cron, billing and backups are the primary's.
+    pub worker: bool,
 }
 
 pub fn serve(shared: Arc<Platform>, opts: ServeOpts) -> Result<()> {
     spawn_epoch_ticker(shared.engine().clone());
-    billing::spawn(shared.clone())?;
     spawn_signal_handler(shared.clone());
-    jobs::spawn_workers(shared.clone(), opts.workers, opts.job_workers)?;
-    jobs::spawn_cron(shared.clone())?;
-    if let Some(config) = shared.backups.clone() {
+    if !opts.worker {
+        billing::spawn(shared.clone())?;
+        jobs::spawn_workers(shared.clone(), opts.workers, opts.job_workers)?;
+        jobs::spawn_cron(shared.clone())?;
+    }
+    if let Some(config) = shared.backups.clone().filter(|_| !opts.worker) {
         eprintln!("backups: every {:?} to {} (keeping {})", config.every, config.dir.display(), config.keep);
         crate::backup::spawn(shared.clone(), config)?;
     }
@@ -129,7 +133,15 @@ where
 /// cron deliveries, which only the platform itself may send to apps.
 pub const PLATFORM_PREFIX: &str = "/_platform/";
 
-async fn handle(shared: Arc<Platform>, worker: usize, pools: Arc<Pools>, req: Request<Incoming>) -> Response<HyperOutgoingBody> {
+async fn handle(shared: Arc<Platform>, worker: usize, pools: Arc<Pools>, mut req: Request<Incoming>) -> Response<HyperOutgoingBody> {
+    // a cluster worker takes requests from its primary only
+    if let Some(w) = crate::cluster::worker() {
+        let ok = req.headers().get(crate::cluster::TOKEN_HEADER).and_then(|v| v.to_str().ok()).is_some_and(|t| t == w.token);
+        if !ok {
+            return text(StatusCode::FORBIDDEN, "this is a cluster worker: requests come through its primary\n");
+        }
+        req.headers_mut().remove(crate::cluster::TOKEN_HEADER);
+    }
     let path = req.uri().path();
     if let Some(internal) = path.strip_prefix(PLATFORM_PREFIX) {
         let internal = internal.to_string();
@@ -174,6 +186,19 @@ async fn handle(shared: Arc<Platform>, worker: usize, pools: Arc<Pools>, req: Re
     let Some(app) = site.app.clone().filter(|a| a.http.is_some()) else {
         return text(StatusCode::NOT_FOUND, "not found\n");
     };
+    // a cluster primary may give the request to a worker with less to do
+    if let Some(p) = crate::cluster::primary() {
+        if let Some((addr, sent)) = p.pick() {
+            // counted down however it ends: a client that goes away cancels it
+            let _sent = InFlight(sent);
+            let result = p.forward(&addr, req).await;
+            match result {
+                Ok(resp) => return resp,
+                Err(back) => req = back,
+            }
+        }
+    }
+    let _running = Running::new();
     let counters = shared.stats.counters(worker, app.id);
     counters.request();
     counters.add(Counter::HttpRequests, 1);
@@ -210,6 +235,41 @@ async fn handle(shared: Arc<Platform>, worker: usize, pools: Arc<Pools>, req: Re
     *log.status.lock().unwrap() = Some(status);
     *log.error.lock().unwrap() = error;
     resp
+}
+
+/// A request forwarded to a cluster worker, counted until it ends.
+struct InFlight(Arc<std::sync::atomic::AtomicU64>);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// An app request running on this server, for the cluster's balancing.
+struct Running;
+
+impl Running {
+    fn new() -> Self {
+        if let Some(p) = crate::cluster::primary() {
+            p.local_inflight.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(w) = crate::cluster::worker() {
+            w.inflight.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        Running
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if let Some(p) = crate::cluster::primary() {
+            p.local_inflight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(w) = crate::cluster::worker() {
+            w.inflight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 /// Counts response body bytes as they're actually sent.

@@ -224,6 +224,24 @@ impl Stats {
                 out[i] = out[i].wrapping_add(v.load(Relaxed));
             }
         }
+        // a cluster primary counts its workers too
+        if let Some((c, _)) = crate::cluster::extra_totals(account) {
+            for (o, v) in out.iter_mut().zip(c) {
+                *o = o.wrapping_add(v);
+            }
+        }
+        out
+    }
+
+    /// This server's own totals, without a cluster's workers (what a worker
+    /// reports).
+    pub fn own_totals(&self, account: usize) -> [u64; N] {
+        let mut out = [0u64; N];
+        for w in &self.workers {
+            for (i, v) in w[account].values.iter().enumerate() {
+                out[i] = out[i].wrapping_add(v.load(Relaxed));
+            }
+        }
         out
     }
 
@@ -233,6 +251,11 @@ impl Stats {
         for w in &self.workers {
             for (i, v) in w[account].latency.iter().enumerate() {
                 out[i] = out[i].wrapping_add(v.load(Relaxed));
+            }
+        }
+        if let Some((_, l)) = crate::cluster::extra_totals(account) {
+            for (o, v) in out.iter_mut().zip(l) {
+                *o = o.wrapping_add(v);
             }
         }
         out

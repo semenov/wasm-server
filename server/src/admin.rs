@@ -161,6 +161,23 @@ async fn route(platform: Arc<Platform>, req: Request<Incoming>, path: &str, who:
                 None => error(StatusCode::BAD_REQUEST, "range must be 1h, 6h, 24h, 7d or 30d"),
             }
         }
+        (&Method::GET, ["cluster"]) if who == Principal::Admin => {
+            let nodes: Vec<serde_json::Value> = crate::cluster::primary()
+                .map(|p| {
+                    p.nodes
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .map(|n| serde_json::json!({ "id": n.id, "addr": n.addr, "cores": n.cores, "cpu": n.cpu, "requests": n.requests(), "in_flight": n.sent.load(std::sync::atomic::Ordering::Relaxed), "seen_ms_ago": n.last_seen.elapsed().as_millis() as u64, "draining": n.draining }))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let local = crate::cluster::primary().map(|p| p.local_inflight.load(std::sync::atomic::Ordering::Relaxed));
+            let autoscale = crate::autoscale::STATUS.lock().unwrap().clone();
+            let names = platform.accounts.names();
+            let here: u64 = (0..names.len()).map(|id| platform.stats.own_totals(id)[crate::stats::Counter::HttpRequests as usize]).sum();
+            json(StatusCode::OK, serde_json::json!({ "primary": crate::cluster::primary().is_some(), "requests_here": here, "in_flight_here": local, "workers": nodes, "autoscale": autoscale }).to_string())
+        }
         (&Method::GET, ["whoami"]) => {
             let role = match &who {
                 Principal::Admin => serde_json::json!({ "role": "admin" }),

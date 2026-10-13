@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+use serde_json::json;
 use std::time::{Duration, Instant};
 use wasmtime::component::{HasSelf, Linker, Resource};
 use wasmtime::{Result, format_err};
@@ -50,6 +51,9 @@ enum Backend {
 enum BackendRef<'a> {
     Postgres(&'a postgres::DbPool),
     Sqlite(Arc<sqlite::Pool>),
+    /// On a cluster worker: every database is the primary's (`cluster.rs`),
+    /// by the server's name for it (`notes/main`, not the app's `main`).
+    Remote(String),
 }
 
 /// Where apps deployed over the API keep their databases
@@ -77,6 +81,9 @@ impl Pools {
     pub fn new(dbs: &[DbConfig], size_per_db: usize, tls: &DbTls) -> Result<Self> {
         let mut by_name = HashMap::new();
         for db in dbs {
+            if db.url.starts_with("remote:") {
+                continue;
+            }
             let backend = match db.url.strip_prefix("sqlite:") {
                 Some(path) => Backend::Sqlite(sqlite::Pool::new(Path::new(path), size_per_db)),
                 None => Backend::Postgres(postgres::DbPool::new(&db.name, &db.url, size_per_db, tls)?),
@@ -87,6 +94,9 @@ impl Pools {
     }
 
     fn get(&self, db: &str) -> Option<BackendRef<'_>> {
+        if crate::cluster::is_worker() {
+            return Some(BackendRef::Remote(db.to_string()));
+        }
         match self.by_name.get(db) {
             Some(Backend::Postgres(p)) => return Some(BackendRef::Postgres(p)),
             Some(Backend::Sqlite(p)) => return Some(BackendRef::Sqlite(p.clone())),
@@ -174,6 +184,8 @@ impl DbCtx {
 pub enum Transaction {
     Postgres(postgres::Tx),
     Sqlite(sqlite::Tx),
+    /// Held on the primary for a cluster worker, by id.
+    Remote(u64),
 }
 
 /// Host side of the `cursor` resource.
@@ -193,6 +205,7 @@ impl sql::Host for RequestState {
         let result = match self.db.backend(&db) {
             Ok(BackendRef::Postgres(pool)) => pool.query(deadline, statement, params).await,
             Ok(BackendRef::Sqlite(pool)) => pool.clone().query(deadline, statement, params).await,
+            Ok(BackendRef::Remote(real)) => crate::cluster::remote_query(json!({ "op": "query", "db": real, "statement": statement, "params": params_json(&params) })).await,
             Err(e) => Err(e),
         };
         self.db.record(started);
@@ -205,6 +218,7 @@ impl sql::Host for RequestState {
         let result = match self.db.backend(&db) {
             Ok(BackendRef::Postgres(pool)) => pool.execute(deadline, statement, params).await,
             Ok(BackendRef::Sqlite(pool)) => pool.clone().execute(deadline, statement, params).await,
+            Ok(BackendRef::Remote(real)) => crate::cluster::remote_count(json!({ "op": "execute", "db": real, "statement": statement, "params": params_json(&params) })).await,
             Err(e) => Err(e),
         };
         self.db.record(started);
@@ -219,6 +233,7 @@ impl sql::HostTransaction for RequestState {
         let result = match self.db.backend(&db) {
             Ok(BackendRef::Postgres(pool)) => pool.begin(deadline).await.map(Transaction::Postgres),
             Ok(BackendRef::Sqlite(pool)) => pool.clone().begin(deadline).await.map(Transaction::Sqlite),
+            Ok(BackendRef::Remote(real)) => crate::cluster::remote_count(json!({ "op": "begin", "db": real })).await.map(Transaction::Remote),
             Err(e) => Err(e),
         };
         self.db.record(started);
@@ -234,6 +249,7 @@ impl sql::HostTransaction for RequestState {
         let result = match self.table.get_mut(&tx)? {
             Transaction::Postgres(tx) => tx.query(deadline, statement, params).await,
             Transaction::Sqlite(tx) => tx.query(deadline, statement, params).await,
+            Transaction::Remote(id) => crate::cluster::remote_query(json!({ "op": "tx_query", "tx": *id, "statement": statement, "params": params_json(&params) })).await,
         };
         self.db.record(started);
         Ok(result)
@@ -245,6 +261,7 @@ impl sql::HostTransaction for RequestState {
         let result = match self.table.get_mut(&tx)? {
             Transaction::Postgres(tx) => tx.execute(deadline, statement, params).await,
             Transaction::Sqlite(tx) => tx.execute(deadline, statement, params).await,
+            Transaction::Remote(id) => crate::cluster::remote_count(json!({ "op": "tx_execute", "tx": *id, "statement": statement, "params": params_json(&params) })).await,
         };
         self.db.record(started);
         Ok(result)
@@ -256,6 +273,7 @@ impl sql::HostTransaction for RequestState {
         let result = match self.table.delete(tx)? {
             Transaction::Postgres(tx) => tx.commit(deadline).await,
             Transaction::Sqlite(tx) => tx.commit(deadline).await,
+            Transaction::Remote(id) => crate::cluster::remote_count(json!({ "op": "commit", "tx": id })).await.map(|_| ()),
         };
         self.db.record(started);
         Ok(result)
@@ -266,6 +284,9 @@ impl sql::HostTransaction for RequestState {
         match self.table.delete(tx)? {
             Transaction::Postgres(tx) => tx.rollback().await,
             Transaction::Sqlite(tx) => tx.rollback().await,
+            Transaction::Remote(id) => {
+                let _ = crate::cluster::remote_count(json!({ "op": "rollback", "tx": id })).await;
+            }
         }
         Ok(())
     }
@@ -278,6 +299,7 @@ impl sql::HostCursor for RequestState {
         let result = match self.db.backend(&db) {
             Ok(BackendRef::Postgres(pool)) => pool.open_cursor(deadline, statement, params).await.map(Cursor::Postgres),
             Ok(BackendRef::Sqlite(pool)) => pool.clone().open_cursor(deadline, statement, params).await.map(Cursor::Sqlite),
+            Ok(BackendRef::Remote(_)) => Err(Error::Unavailable("cursors aren't available on cluster workers yet; use query with limit and offset".into())),
             Err(e) => Err(e),
         };
         self.db.record(started);
@@ -326,4 +348,111 @@ fn chain(e: &dyn StdError) -> String {
         source = cause.source();
     }
     out
+}
+
+// ---------------------------------------------------------------- cluster
+
+fn params_json(params: &[Value]) -> serde_json::Value {
+    serde_json::Value::Array(params.iter().map(crate::cluster::value_to_json).collect())
+}
+
+/// Transactions the primary holds for workers, by id.
+#[derive(Default)]
+pub struct RemoteTxs {
+    open: Mutex<HashMap<u64, (Transaction, std::time::Instant)>>,
+    next: std::sync::atomic::AtomicU64,
+}
+
+impl RemoteTxs {
+    /// Rolls back transactions idle for longer than `idle`.
+    pub async fn sweep(&self, idle: Duration) {
+        let stale: Vec<Transaction> = {
+            let mut open = self.open.lock().unwrap();
+            let ids: Vec<u64> = open.iter().filter(|(_, (_, at))| at.elapsed() > idle).map(|(id, _)| *id).collect();
+            ids.into_iter().filter_map(|id| open.remove(&id).map(|(tx, _)| tx)).collect()
+        };
+        for tx in stale {
+            match tx {
+                Transaction::Postgres(tx) => tx.rollback().await,
+                Transaction::Sqlite(tx) => tx.rollback().await,
+                Transaction::Remote(_) => {}
+            }
+        }
+    }
+}
+
+/// Runs a worker's database call on the primary: `{"ok": ...}` or `{"err": ...}`.
+pub async fn serve_call(pools: &Pools, txs: &RemoteTxs, call: &serde_json::Value, timeout: Duration) -> serde_json::Value {
+    use crate::cluster::{error_to_json, result_to_json, value_from_json};
+    use serde_json::json;
+    let s = |k: &str| call.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let params: Vec<Value> = call.get("params").and_then(|p| p.as_array()).map(|a| a.iter().map(value_from_json).collect()).unwrap_or_default();
+    let tx_id = call.get("tx").and_then(|v| v.as_u64()).unwrap_or(0);
+    let deadline = tokio::time::Instant::now() + timeout;
+    let backend = |db: &str| pools.get(db).ok_or_else(|| Error::NotAllowed(format!("unknown database {db:?}")));
+    let take = |id: u64| txs.open.lock().unwrap().remove(&id).map(|(tx, _)| tx).ok_or_else(|| Error::Unavailable("the transaction is gone (idle too long, or ended)".into()));
+    let put = |id: u64, tx: Transaction| {
+        txs.open.lock().unwrap().insert(id, (tx, std::time::Instant::now()));
+    };
+    let out: Result<serde_json::Value, Error> = match s("op").as_str() {
+        "query" => match backend(&s("db")) {
+            Ok(BackendRef::Postgres(p)) => p.query(deadline, s("statement"), params).await.map(|r| result_to_json(&r)),
+            Ok(BackendRef::Sqlite(p)) => p.query(deadline, s("statement"), params).await.map(|r| result_to_json(&r)),
+            Ok(BackendRef::Remote(_)) => Err(Error::Unavailable("a worker can't serve databases".into())),
+            Err(e) => Err(e),
+        },
+        "execute" => match backend(&s("db")) {
+            Ok(BackendRef::Postgres(p)) => p.execute(deadline, s("statement"), params).await.map(|n| json!(n)),
+            Ok(BackendRef::Sqlite(p)) => p.execute(deadline, s("statement"), params).await.map(|n| json!(n)),
+            Ok(BackendRef::Remote(_)) => Err(Error::Unavailable("a worker can't serve databases".into())),
+            Err(e) => Err(e),
+        },
+        "begin" => {
+            let tx = match backend(&s("db")) {
+                Ok(BackendRef::Postgres(p)) => p.begin(deadline).await.map(Transaction::Postgres),
+                Ok(BackendRef::Sqlite(p)) => p.begin(deadline).await.map(Transaction::Sqlite),
+                Ok(BackendRef::Remote(_)) => Err(Error::Unavailable("a worker can't serve databases".into())),
+                Err(e) => Err(e),
+            };
+            tx.map(|tx| {
+                let id = txs.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                put(id, tx);
+                json!(id)
+            })
+        }
+        "tx_query" | "tx_execute" => match take(tx_id) {
+            Ok(mut tx) => {
+                let query = s("op") == "tx_query";
+                let r = match &mut tx {
+                    Transaction::Postgres(t) if query => t.query(deadline, s("statement"), params).await.map(|r| result_to_json(&r)),
+                    Transaction::Sqlite(t) if query => t.query(deadline, s("statement"), params).await.map(|r| result_to_json(&r)),
+                    Transaction::Postgres(t) => t.execute(deadline, s("statement"), params).await.map(|n| json!(n)),
+                    Transaction::Sqlite(t) => t.execute(deadline, s("statement"), params).await.map(|n| json!(n)),
+                    Transaction::Remote(_) => Err(Error::Unavailable("a worker can't serve databases".into())),
+                };
+                put(tx_id, tx);
+                r
+            }
+            Err(e) => Err(e),
+        },
+        "commit" => match take(tx_id) {
+            Ok(Transaction::Postgres(t)) => t.commit(deadline).await.map(|_| json!(0)),
+            Ok(Transaction::Sqlite(t)) => t.commit(deadline).await.map(|_| json!(0)),
+            Ok(Transaction::Remote(_)) => Ok(json!(0)),
+            Err(e) => Err(e),
+        },
+        "rollback" => {
+            match take(tx_id) {
+                Ok(Transaction::Postgres(t)) => t.rollback().await,
+                Ok(Transaction::Sqlite(t)) => t.rollback().await,
+                _ => {}
+            }
+            Ok(json!(0))
+        }
+        op => Err(Error::Unavailable(format!("unknown database call {op:?}"))),
+    };
+    match out {
+        Ok(v) => json!({ "ok": v }),
+        Err(e) => json!({ "err": error_to_json(&e) }),
+    }
 }

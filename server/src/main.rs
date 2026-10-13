@@ -1,8 +1,10 @@
 mod admin;
 mod app;
+mod autoscale;
 mod backup;
 mod bench;
 mod billing;
+mod cluster;
 mod bindings;
 mod client;
 mod cache;
@@ -147,6 +149,49 @@ enum Command {
         /// Environment variable for an app, as APP:KEY=VALUE.
         #[arg(long = "env", value_parser = parse_env)]
         envs: Vec<(String, String, String)>,
+        /// Primary of a cluster: where workers join (a private network
+        /// address), e.g. 10.0.0.2:7070. Needs --cluster-token.
+        #[arg(long)]
+        cluster_listen: Option<SocketAddr>,
+        /// The cluster's shared secret (at least 16 characters), on the
+        /// primary and every worker.
+        #[arg(long, env = "WASM_SERVER_CLUSTER_TOKEN")]
+        cluster_token: Option<String>,
+        /// Run as a worker of the primary at this cluster address
+        /// (http://10.0.0.2:7070): its apps, databases and queues are the
+        /// primary's, which sends it requests.
+        #[arg(long)]
+        join: Option<String>,
+        /// A worker's address for the primary's requests; default
+        /// http://<--listen>.
+        #[arg(long)]
+        advertise: Option<String>,
+        /// Add and remove workers by load (on a primary): `local` (worker
+        /// processes on this machine) or `digitalocean` (droplets;
+        /// DIGITALOCEAN_TOKEN). See autoscale.rs.
+        #[arg(long)]
+        autoscale: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        autoscale_min: usize,
+        #[arg(long, default_value_t = 2)]
+        autoscale_max: usize,
+        /// Add a worker at this CPU use or more (0..1), held for 2 minutes.
+        #[arg(long, default_value_t = 0.7)]
+        autoscale_high: f64,
+        /// Remove one under this, held for 10 minutes.
+        #[arg(long, default_value_t = 0.3)]
+        autoscale_low: f64,
+        /// The cluster address workers join; default http://<--cluster-listen>.
+        #[arg(long)]
+        autoscale_join: Option<String>,
+        /// digitalocean: droplet size and region.
+        #[arg(long, default_value = "s-2vcpu-4gb")]
+        autoscale_size: String,
+        #[arg(long, default_value = "fra1")]
+        autoscale_region: String,
+        /// Decide in seconds instead of minutes (for tests).
+        #[arg(long, hide = true)]
+        autoscale_fast: bool,
         /// HTTPS on --listen, with certificates from Let's Encrypt for every
         /// domain in the deployment; port 80 (--http-listen) answers the
         /// CA's challenges and redirects to https. Typically:
@@ -331,6 +376,19 @@ fn main() -> Result<()> {
             cache_mb,
             envs,
             outbound,
+            cluster_listen,
+            cluster_token,
+            join,
+            advertise,
+            autoscale,
+            autoscale_min,
+            autoscale_max,
+            autoscale_high,
+            autoscale_low,
+            autoscale_join,
+            autoscale_size,
+            autoscale_region,
+            autoscale_fast,
             https,
             http_listen,
             acme_email,
@@ -343,7 +401,17 @@ fn main() -> Result<()> {
             max_memory_mb,
             engine: engine_args,
         } => {
+            if join.is_some() || cluster_listen.is_some() {
+                if cluster_token.as_deref().is_none_or(|t| t.len() < 16) {
+                    wasmtime::bail!("a cluster needs --cluster-token (or WASM_SERVER_CLUSTER_TOKEN), at least 16 characters");
+                }
+            }
+            if let Some(primary) = &join {
+                let id = format!("{}-{}", std::env::var("HOSTNAME").ok().filter(|h| !h.is_empty()).unwrap_or_else(|| "worker".into()), std::process::id());
+                cluster::set_worker(cluster::Worker::new(primary.trim_end_matches('/').to_string(), cluster_token.clone().unwrap(), id, advertise.clone().unwrap_or_else(|| format!("http://{listen}"))));
+            }
             let source = match config {
+                _ if join.is_some() => deployment::Source::Cluster,
                 Some(path) => deployment::Source::File(path),
                 None => deployment::Source::Flags(flags::deployment(flags::Flags {
                     apps,
@@ -384,7 +452,7 @@ fn main() -> Result<()> {
                 })
                 .collect::<Result<Vec<_>>>()?;
             let db_tls = db::tls(db_ca_file.as_deref())?;
-            if !databases.is_empty() {
+            if !databases.is_empty() && join.is_none() {
                 let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
                 let pools = db::Pools::new(&databases, 1, &db_tls)?;
                 let (reachable, warnings) = rt.block_on(pools.check(&databases))?;
@@ -428,7 +496,7 @@ fn main() -> Result<()> {
                 databases,
                 db_pool_size,
                 db_tls,
-                jobs: Some(jobs),
+                jobs: if join.is_some() { None } else { Some(jobs) },
                 billing,
                 admin_token,
                 data_dir: data_dir.clone(),
@@ -439,7 +507,33 @@ fn main() -> Result<()> {
                 }),
                 reload: platform::Reloader::new(engine, source, defaults, components),
             }));
-            let tls = if https {
+            if let Some(addr) = cluster_listen {
+                let primary = cluster::start_primary(platform.clone(), addr, cluster_token.clone().unwrap(), workers)?;
+                if let Some(provider) = autoscale {
+                    autoscale::start(
+                        primary,
+                        autoscale::AutoscaleOpts {
+                            provider,
+                            min: autoscale_min,
+                            max: autoscale_max,
+                            high: autoscale_high,
+                            low: autoscale_low,
+                            join: autoscale_join.unwrap_or_else(|| format!("http://{addr}")),
+                            token: cluster_token.clone().unwrap(),
+                            data_dir: data_dir.clone(),
+                            size: autoscale_size,
+                            region: autoscale_region,
+                            fast: autoscale_fast,
+                        },
+                    )?;
+                }
+            } else if autoscale.is_some() {
+                wasmtime::bail!("--autoscale is for a cluster primary: add --cluster-listen");
+            }
+            if join.is_some() {
+                cluster::spawn_heartbeat(platform.clone(), workers)?;
+            }
+            let tls = if https && join.is_none() {
                 let opts = tls::TlsOpts {
                     directory: tls::directory_url(acme_directory.as_deref()),
                     email: acme_email,
@@ -451,10 +545,12 @@ fn main() -> Result<()> {
             } else {
                 None
             };
-            let metrics = Arc::new(metrics::Metrics::open(&data_dir.join("metrics.db"))?);
-            metrics::METRICS.set(metrics.clone()).ok();
-            metrics::spawn(platform.clone(), metrics)?;
-            server::serve(platform, server::ServeOpts { listen, workers, job_workers, tls })?;
+            if join.is_none() {
+                let metrics = Arc::new(metrics::Metrics::open(&data_dir.join("metrics.db"))?);
+                metrics::METRICS.set(metrics.clone()).ok();
+                metrics::spawn(platform.clone(), metrics)?;
+            }
+            server::serve(platform, server::ServeOpts { listen, workers, job_workers, tls, worker: join.is_some() })?;
         }
         Command::Deploy { url, app, file, token } => client::deploy(&url, &app, &file, token.as_deref())?,
         Command::Reload { url, token } => client::reload(&url, token.as_deref())?,

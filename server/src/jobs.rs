@@ -272,27 +272,37 @@ pub fn add_to_linker(linker: &mut Linker<RequestState>) -> Result<()> {
     queue::add_to_linker::<RequestState, HasSelf<RequestState>>(linker, |s| s)
 }
 
+/// Stores a message for `name`'s consumer (a guest's `send`, or a cluster
+/// worker's on the primary).
+pub async fn enqueue(platform: &Platform, name: String, payload: Vec<u8>, delay_ms: u64) -> Result<(), QueueError> {
+    let Some(consumer) = platform.current().queues.get(&name).cloned() else {
+        return Err(QueueError::UnknownQueue(name));
+    };
+    if payload.len() > MAX_PAYLOAD {
+        return Err(QueueError::TooLarge(payload.len() as u64));
+    }
+    let Some(store) = &platform.jobs else {
+        return Err(QueueError::Unavailable("no job store".into()));
+    };
+    let run_at = now_ms() + delay_ms.min(365 * 24 * 3600 * 1000) as i64;
+    store.enqueue(random_id(), Kind::Queue, name, consumer, payload, run_at).await.map(|_| ()).map_err(QueueError::Unavailable)
+}
+
 impl queue::Host for RequestState {
     async fn send(&mut self, name: String, payload: Vec<u8>, delay_ms: u64) -> Result<Result<(), QueueError>> {
         let platform = self.env.platform.clone();
-        let Some(consumer) = platform.current().queues.get(&name).cloned() else {
-            return Ok(Err(QueueError::UnknownQueue(name)));
-        };
-        if payload.len() > MAX_PAYLOAD {
-            return Ok(Err(QueueError::TooLarge(payload.len() as u64)));
-        }
-        let Some(store) = &platform.jobs else {
-            return Ok(Err(QueueError::Unavailable("no job store".into())));
-        };
         let counters = self.counters();
         counters.add(crate::stats::Counter::QueueMessages, 1);
         counters.add(crate::stats::Counter::QueueBytes, payload.len() as u64);
         let started = Instant::now();
-        let run_at = now_ms() + delay_ms.min(365 * 24 * 3600 * 1000) as i64;
-        let result = store.enqueue(random_id(), Kind::Queue, name, consumer, payload, run_at).await;
+        let result = if crate::cluster::is_worker() {
+            crate::cluster::remote_send(&name, &payload, delay_ms).await
+        } else {
+            enqueue(&platform, name, payload, delay_ms).await
+        };
         // Waiting for the commit is not the guest's CPU time.
         self.call_wait += started.elapsed();
-        Ok(result.map(|_| ()).map_err(QueueError::Unavailable))
+        Ok(result)
     }
 }
 

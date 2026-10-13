@@ -122,11 +122,16 @@ pub enum Source {
     /// Fixed at startup; a reload re-reads the component files it names.
     Flags(Deployment),
     File(PathBuf),
+    /// A cluster worker: the primary's apps (`cluster.rs`).
+    Cluster,
 }
 
 impl Source {
     /// The deployment, with the apps deployed over the API (`managed.rs`).
     pub fn load(&self, data_dir: &Path) -> Result<Deployment> {
+        if let Source::Cluster = self {
+            return crate::cluster::load_deployment(data_dir);
+        }
         let mut deployment = match self {
             Source::Flags(d) => d.clone(),
             Source::File(path) => {
@@ -135,6 +140,7 @@ impl Source {
                 d.resolve_paths(path.parent().unwrap_or(Path::new(".")));
                 d
             }
+            Source::Cluster => unreachable!(),
         };
         crate::managed::add_to(&mut deployment, data_dir)?;
         deployment.validate()?;
@@ -145,6 +151,7 @@ impl Source {
         match self {
             Source::Flags(_) => "command-line flags".into(),
             Source::File(path) => path.display().to_string(),
+            Source::Cluster => "the cluster's primary".into(),
         }
     }
 }
