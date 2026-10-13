@@ -147,6 +147,10 @@ async fn handle(shared: Arc<Platform>, worker: usize, pools: Arc<Pools>, mut req
         let internal = internal.to_string();
         return crate::admin::handle(shared, req, &internal).await;
     }
+    // the files of projects: on the primary, never forwarded
+    if crate::storage::is_files_path(path) {
+        return crate::storage::serve(shared, req).await;
+    }
     if path == "/_platform" {
         let mut resp = text(StatusCode::PERMANENT_REDIRECT, "");
         resp.headers_mut().insert(hyper::header::LOCATION, "/_platform/".parse().unwrap());

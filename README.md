@@ -198,9 +198,35 @@ let s = stats::summary(code);   // runs in a fresh `stats` instance, with stats'
 | `events` | (export) `handle(event)` for queue messages and cron ticks; an error means "retry later" |
 | `websocket` | `send`, `close`, channels (`subscribe`, `publish`, `subscribers`), per-connection state |
 | `websocket-handler` | (export) `on-connect` (may refuse), `on-message`, `on-close` |
+| `storage` | A project's files by key: `put` (public or not), `get`, `info`, `delete`, `list`, `url` (signed for private files), `upload-url` (the client sends the file itself) |
 
 Apps import the `platform:sdk/imports` world (or `events-handler` to also
 receive events). A component only imports the interfaces it actually uses.
+
+### Files (`storage`)
+
+Projects deployed over the API keep users' files on the server
+(`server/src/storage.rs`):
+
+- **Where:** `<data-dir>/apps/PROJECT/files.db` (key, size, type, public,
+  time) and `files/` (each file under the SHA-256 of its key). All the
+  project's apps share them.
+- **Reading:** the host serves `/_files/PROJECT/KEY` on every domain
+  without running the app. A public file is served to anyone, cached for an
+  hour. Any other file needs `?exp=...&sig=...` from `url(key, ttl-ms)`: an
+  HMAC with the server's own key (`<data-dir>/storage.key`) that expires.
+- **Uploading:** `upload-url(key, max-bytes, type, public, ttl-ms)` gives a
+  URL the client sends the file to (`PUT`, the body is the file; CORS is
+  open, the signature decides). Big files go from the client to the disk
+  without passing through the app; over `max-bytes` is a 413. The app's own
+  `put` takes up to 64 MB.
+- **Safety:** files are served with `nosniff` and a sandboxing
+  `Content-Security-Policy`, so an uploaded page can't run scripts on the
+  app's domain.
+- **Clusters:** a worker's app sends its calls to the primary, which keeps
+  the files; `/_files/` requests never leave the primary.
+- **Not yet:** files aren't in backups or storage billing, and there are
+  no range requests (video seeking).
 
 ### Outgoing HTTP
 

@@ -108,6 +108,9 @@ pub struct AppSpec {
     /// the server's (`main` → `notes/main`).
     #[serde(skip)]
     pub db_aliases: BTreeMap<String, String>,
+    /// For apps deployed over the API: their project (its files).
+    #[serde(skip)]
+    pub project: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]

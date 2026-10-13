@@ -58,6 +58,8 @@ pub struct AppState {
     pub domains: Vec<String>,
     #[serde(default)]
     pub path: Option<String>,
+    #[serde(default)]
+    pub project: Option<String>,
     pub outbound: Option<Vec<String>>,
     pub websocket: Option<String>,
     pub env: BTreeMap<String, String>,
@@ -302,6 +304,17 @@ async fn worker_call(path: &str, body: J) -> Result<J> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
+/// A storage call from a worker's app, made on the primary, which keeps
+/// the files.
+pub async fn remote_storage(project: &str, mut call: J) -> Result<J, String> {
+    call["project"] = J::String(project.to_string());
+    let reply = worker_call("/cluster/storage", call).await.map_err(|e| format!("the primary: {e}"))?;
+    match reply.get("err").and_then(J::as_str) {
+        Some(e) => Err(e.to_string()),
+        None => Ok(reply.get("ok").cloned().unwrap_or(J::Null)),
+    }
+}
+
 async fn remote_sql(call: J) -> Result<J, SqlError> {
     let reply = worker_call("/cluster/sql", call).await.map_err(|e| SqlError::Unavailable(format!("the primary: {e}")))?;
     match reply.get("err") {
@@ -371,6 +384,7 @@ pub fn load_deployment(data_dir: &std::path::Path) -> Result<crate::deployment::
                 db_aliases: app.db_aliases.clone(),
                 domains: app.domains.clone(),
                 path: app.path.clone(),
+                project: app.project.clone(),
                 env: app.env.clone(),
                 outbound: app.outbound.clone(),
                 websocket: app.websocket.clone(),
@@ -524,6 +538,7 @@ impl Primary {
                 hash: self.hash_of(&spec.component),
                 domains: spec.domains.clone(),
                 path: spec.path.clone(),
+                project: spec.project.clone(),
                 outbound: spec.outbound.clone(),
                 websocket: spec.websocket.clone(),
                 env: spec.env.clone(),
@@ -773,6 +788,20 @@ async fn serve(p: Arc<Primary>, pools: Arc<crate::db::Pools>, txs: Arc<crate::db
             let call: J = serde_json::from_slice(&body).unwrap_or(J::Null);
             let timeout = Duration::from_millis(call.get("timeout_ms").and_then(J::as_u64).unwrap_or(5000));
             reply(StatusCode::OK, crate::db::serve_call(&pools, &txs, &call, timeout).await.to_string())
+        }
+        ("POST", "/cluster/storage") => {
+            let call: J = serde_json::from_slice(&body).unwrap_or(J::Null);
+            let data_dir = p.platform.data_dir.clone();
+            let out = tokio::task::spawn_blocking(move || {
+                let project = call.get("project").and_then(J::as_str).unwrap_or("").to_string();
+                match crate::storage::run(&data_dir, &project, &call) {
+                    Ok(v) => json!({ "ok": v }),
+                    Err(e) => json!({ "err": e }),
+                }
+            })
+            .await
+            .unwrap_or_else(|e| json!({ "err": e.to_string() }));
+            reply(StatusCode::OK, out.to_string())
         }
         ("POST", "/cluster/queue") => {
             let call: J = serde_json::from_slice(&body).unwrap_or(J::Null);

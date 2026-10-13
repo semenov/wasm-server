@@ -23,6 +23,7 @@ mod platform;
 mod routes;
 mod server;
 mod static_files;
+mod storage;
 mod stats;
 mod tls;
 mod versions;
@@ -584,6 +585,7 @@ fn main() -> Result<()> {
                 websocket_path: None,
                 outbound: Arc::default(),
                 db_aliases: Arc::default(),
+                project: None,
             };
             let component = app::load_component(&engine, "bench", &app)?;
             let app = app::App::new(&linker, 0, "bench", &component, config)?;

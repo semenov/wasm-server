@@ -7,6 +7,7 @@ world imports {
     import cache;
     import queue;
     import websocket;
+    import storage;
 }
 
 /// A function that also receives queue messages and cron ticks.

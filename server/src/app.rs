@@ -46,6 +46,8 @@ pub struct RequestState {
     pub outbound: crate::outbound::Hooks,
     /// The instance's standard output and error, for the app's log.
     pub output: wasmtime_wasi::p2::pipe::MemoryOutputPipe,
+    /// The project whose files it reaches (`platform:sdk/storage`).
+    pub project: Option<Arc<str>>,
 }
 
 impl RequestState {
@@ -174,6 +176,8 @@ pub struct AppConfig {
     pub outbound: Arc<crate::outbound::Policy>,
     /// The app's own names for its databases (deployed apps).
     pub db_aliases: Arc<HashMap<String, String>>,
+    /// The project it belongs to (deployed apps): its files.
+    pub project: Option<Arc<str>>,
 }
 
 impl App {
@@ -218,6 +222,7 @@ impl App {
                     usage: Arc::default(),
                 },
                 output,
+                project: self.config.project.clone(),
             },
         );
         store.limiter(|s| &mut s.limits);
@@ -259,6 +264,7 @@ pub fn linker(engine: &Engine) -> Result<Linker<RequestState>> {
     cache::add_to_linker(&mut linker)?;
     crate::jobs::add_to_linker(&mut linker)?;
     crate::ws::add_to_linker(&mut linker)?;
+    crate::storage::add_to_linker(&mut linker)?;
     Ok(linker)
 }
 

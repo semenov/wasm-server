@@ -149,6 +149,7 @@ pub fn add_to(deployment: &mut Deployment, data_dir: &Path) -> Result<()> {
                 outbound: s.outbound.clone().or_else(|| settings.outbound.clone()),
                 websocket: s.websocket.clone(),
                 env: env.clone(),
+                project: Some(project.clone()),
                 ..Default::default()
             };
             deployment.apps.insert(name, spec);

@@ -3286,6 +3286,7 @@ dependencies = [
  "libc",
  "mime_guess",
  "moka",
+ "ring",
  "rusqlite",
  "rustls",
  "serde",

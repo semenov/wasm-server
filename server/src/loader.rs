@@ -153,6 +153,7 @@ pub fn build(
             websocket_path: spec.websocket.clone(),
             outbound: Arc::new(crate::outbound::Policy::new(spec.outbound.as_deref())),
             db_aliases: Arc::new(spec.db_aliases.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+            project: spec.project.as_deref().map(Arc::from),
         };
         let app = App::new(&linker, accounts.id(name)?, name, component, config)?;
         if (!spec.queues.is_empty() || !spec.cron.is_empty()) && app.events.is_none() {

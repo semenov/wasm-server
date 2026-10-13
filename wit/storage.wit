@@ -1,0 +1,45 @@
+package platform:sdk@0.1.0;
+
+/// Files of the app's project (uploads: avatars, photos, attachments), kept
+/// by the host on its disk and served by it without running the app.
+///
+/// A key is a path like `avatars/42.png`: letters, digits, `.`, `_`, `-`
+/// and `/` between parts, up to 512 bytes. A public file is served to
+/// anyone at its URL; any other only through a signed URL, which expires.
+/// URLs are paths on the app's own domain (`/_files/...`).
+interface storage {
+    record object {
+        key: string,
+        size: u64,
+        content-type: string,
+        public: bool,
+        /// When it was written, in milliseconds since 1970.
+        modified-ms: u64,
+    }
+
+    /// Stores (or replaces) a file.
+    put: func(key: string, data: list<u8>, content-type: string, public: bool) -> result<_, string>;
+
+    /// A file's content, or none if there is no such file.
+    get: func(key: string) -> result<option<list<u8>>, string>;
+
+    /// A file's details, or none if there is no such file.
+    info: func(key: string) -> result<option<object>, string>;
+
+    /// Removes a file; returns whether it was there.
+    delete: func(key: string) -> result<bool, string>;
+
+    /// Files whose keys start with `prefix`, in key order, after the key
+    /// `after` (empty: from the start), at most `limit`.
+    %list: func(prefix: string, after: string, limit: u32) -> result<list<object>, string>;
+
+    /// Where a browser or app reads the file: for a public file its
+    /// lasting URL, for another one signed for `ttl-ms`.
+    url: func(key: string, ttl-ms: u64) -> result<string, string>;
+
+    /// Where a client sends the file itself, with PUT (the body is the
+    /// file), so big files don't pass through the app: valid for `ttl-ms`,
+    /// up to `max-bytes`, stored with `content-type` (empty: the client's
+    /// Content-Type) and, if `public`, readable by anyone.
+    upload-url: func(key: string, max-bytes: u64, content-type: string, public: bool, ttl-ms: u64) -> result<string, string>;
+}
