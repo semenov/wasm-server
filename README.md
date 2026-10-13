@@ -37,7 +37,9 @@ static sites. Everything an app uses is metered and billed in credits.
 - `examples/shortener/`, `examples/chat/`: schemas and run scripts for the showcases
 - `bench/`: load test, seed data, `native-go/` (the notes app as a native Go
   server, for comparison), `native-conduit/` (the Conduit API as native Go
-  and Rust servers, and `compare.sh`); `docker-compose.yml`, `Dockerfile`: Postgres (with
+  and Rust servers, and `compare.sh`), `noisy.py` (one app's heavy requests
+  vs another app's latency), `riscv/` (wasm vs RISC-V sandboxes: libriscv,
+  PolkaVM); `docker-compose.yml`, `Dockerfile`: Postgres (with
   TLS) and the Linux benchmark image
 - `docs/hosting.md`: multi-server hosting design; `docs/findings.md`: what the
   experiments taught us (wasm vs native, guest languages, outbound access,
@@ -575,11 +577,15 @@ docker compose run --rm bench --suite ...        # the same on Linux
 - WASI 0.3 (native async): wasmtime 49 already runs it, so try one Rust app on
   nightly (`wasm32-wasip3`) next to the 0.2 apps; move fully once the target
   is stable. Streaming responses will need a longer request limit.
-- Head-of-line blocking on a worker: a CPU-heavy request (e.g. a 25 ms
-  argon2 login) delays the other requests on its core, which gave 3× worse
-  p99 than native servers in the Conduit mix. Try work stealing between
-  workers, or moving long-running instances off the accepting worker, and
-  measure the cost per request (`bench/native-conduit/compare.sh`).
+- **Isolation between apps on one server (noisy neighbours):** one app's
+  CPU-heavy requests (20 ms each) raise other apps' p99 from 3 ms to
+  160–250 ms. As separate processes the kernel keeps them at about 1 ms
+  (`bench/noisy.py`, see `docs/findings.md`).
+  - **Plan:** move requests that pass a few ms of CPU off the per-core
+    workers to a lower-priority thread pool, with per-app limits on
+    concurrent heavy requests.
+  - **Then measure:** the cost per request, and the noisy and Conduit
+    tests again.
 - Per-app logs.
 - CLI commands for agents: `new`, `build`, `call`, with `--json` output.
 - Benchmark tasks for agent experiments: give agents app specs and measure the

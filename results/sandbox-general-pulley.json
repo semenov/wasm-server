@@ -1,0 +1,142 @@
+[
+ {
+  "program": "coremark",
+  "engine": "native",
+  "wall_s": 2.54213508500834,
+  "rss_kib": 1136,
+  "output_ok": true,
+  "coremark_score": 39363.321886
+ },
+ {
+  "program": "coremark",
+  "engine": "wasmtime-pulley",
+  "wall_s": 58.259265526998206,
+  "rss_kib": 16812,
+  "output_ok": false,
+  "coremark_score": 1716.559787
+ },
+ {
+  "program": "nbody",
+  "engine": "native",
+  "wall_s": 0.37728908300050534,
+  "rss_kib": 1184,
+  "output_ok": true
+ },
+ {
+  "program": "nbody",
+  "engine": "wasmtime-pulley",
+  "wall_s": 19.978736217992264,
+  "rss_kib": 16852,
+  "output_ok": true
+ },
+ {
+  "program": "fannkuch",
+  "engine": "native",
+  "wall_s": 1.9274255000054836,
+  "rss_kib": 1184,
+  "output_ok": true
+ },
+ {
+  "program": "fannkuch",
+  "engine": "wasmtime-pulley",
+  "wall_s": 28.030466470998363,
+  "rss_kib": 16780,
+  "output_ok": true
+ },
+ {
+  "program": "spectralnorm",
+  "engine": "native",
+  "wall_s": 0.16733858399675228,
+  "rss_kib": 1312,
+  "output_ok": true
+ },
+ {
+  "program": "spectralnorm",
+  "engine": "wasmtime-pulley",
+  "wall_s": 5.3968066689994885,
+  "rss_kib": 16784,
+  "output_ok": true
+ },
+ {
+  "program": "mandelbrot",
+  "engine": "native",
+  "wall_s": 0.6669548750069225,
+  "rss_kib": 1116,
+  "output_ok": true
+ },
+ {
+  "program": "mandelbrot",
+  "engine": "wasmtime-pulley",
+  "wall_s": 14.974783298006514,
+  "rss_kib": 14956,
+  "output_ok": true
+ },
+ {
+  "program": "binarytrees",
+  "engine": "native",
+  "wall_s": 0.7046220420015743,
+  "rss_kib": 33960,
+  "output_ok": true
+ },
+ {
+  "program": "binarytrees",
+  "engine": "wasmtime-pulley",
+  "wall_s": 20.683947676006937,
+  "rss_kib": 31052,
+  "output_ok": true
+ },
+ {
+  "program": "sha256",
+  "engine": "native",
+  "wall_s": 0.4910764590022154,
+  "rss_kib": 2144,
+  "output_ok": true
+ },
+ {
+  "program": "sha256",
+  "engine": "wasmtime-pulley",
+  "wall_s": 14.74591075698845,
+  "rss_kib": 15640,
+  "output_ok": true
+ },
+ {
+  "program": "sort",
+  "engine": "native",
+  "wall_s": 0.42163029201037716,
+  "rss_kib": 40008,
+  "output_ok": true
+ },
+ {
+  "program": "sort",
+  "engine": "wasmtime-pulley",
+  "wall_s": 46.40460268899915,
+  "rss_kib": 34248,
+  "output_ok": true
+ },
+ {
+  "program": "hashmap",
+  "engine": "native",
+  "wall_s": 0.2377225840027677,
+  "rss_kib": 66688,
+  "output_ok": true
+ },
+ {
+  "program": "hashmap",
+  "engine": "wasmtime-pulley",
+  "wall_s": 2.7925773349998053,
+  "rss_kib": 80244,
+  "output_ok": true
+ },
+ {
+  "program": "hello (start-up)",
+  "engine": "native",
+  "wall_s": 0.0004987910069758072,
+  "rss_kib": 932
+ },
+ {
+  "program": "hello (start-up)",
+  "engine": "wasmtime-pulley",
+  "wall_s": 0.00159891699149739,
+  "rss_kib": 14828
+ }
+]

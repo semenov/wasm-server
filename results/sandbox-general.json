@@ -1,0 +1,341 @@
+[
+ {
+  "program": "coremark",
+  "engine": "native",
+  "wall_s": 2.531072668003617,
+  "rss_kib": 1136,
+  "output_ok": true,
+  "coremark_score": 38870.183693
+ },
+ {
+  "program": "coremark",
+  "engine": "wasmtime",
+  "wall_s": 3.029295751999598,
+  "rss_kib": 14956,
+  "output_ok": false,
+  "coremark_score": 33080.899867
+ },
+ {
+  "program": "coremark",
+  "engine": "wasmtime-pulley",
+  "error": "['wasmtime', 'run', '--allow-precompiled', 'out/wasm/coremark.pulley', '0x0', '0x0', '0x66', '100000']: exit 1: Error: failed deserialization for: out/wasm/coremark.pulley\n\nCaused by:\n    Module was compiled for architecture 'pulley64'\n\nCommand exited with non-zero status 1\nTIME 0.00 12128\n"
+ },
+ {
+  "program": "coremark",
+  "engine": "libriscv",
+  "wall_s": 40.66589039300743,
+  "rss_kib": 7748,
+  "output_ok": false,
+  "coremark_score": 2459.531786
+ },
+ {
+  "program": "coremark",
+  "engine": "libriscv-bintr",
+  "translate_s": 76.2118463270017,
+  "wall_s": 7.6672177120053675,
+  "rss_kib": 12136,
+  "output_ok": false,
+  "coremark_score": 13052.574203
+ },
+ {
+  "program": "nbody",
+  "engine": "native",
+  "wall_s": 0.3749754590098746,
+  "rss_kib": 1184,
+  "output_ok": true
+ },
+ {
+  "program": "nbody",
+  "engine": "wasmtime",
+  "wall_s": 0.394008124989341,
+  "rss_kib": 14956,
+  "output_ok": true
+ },
+ {
+  "program": "nbody",
+  "engine": "wasmtime-pulley",
+  "error": "['wasmtime', 'run', '--allow-precompiled', 'out/wasm/nbody.pulley', '10000000']: exit 1: Error: failed deserialization for: out/wasm/nbody.pulley\n\nCaused by:\n    Module was compiled for architecture 'pulley64'\n\nCommand exited with non-zero status 1\nTIME 0.00 12128\n"
+ },
+ {
+  "program": "nbody",
+  "engine": "libriscv",
+  "wall_s": 8.630628420985886,
+  "rss_kib": 9692,
+  "output_ok": true
+ },
+ {
+  "program": "nbody",
+  "engine": "libriscv-bintr",
+  "translate_s": 74.84109753399389,
+  "wall_s": 3.0337732499901904,
+  "rss_kib": 9892,
+  "output_ok": true
+ },
+ {
+  "program": "fannkuch",
+  "engine": "native",
+  "wall_s": 1.933520000995486,
+  "rss_kib": 1184,
+  "output_ok": true
+ },
+ {
+  "program": "fannkuch",
+  "engine": "wasmtime",
+  "wall_s": 1.9862639589991886,
+  "rss_kib": 14956,
+  "output_ok": true
+ },
+ {
+  "program": "fannkuch",
+  "engine": "wasmtime-pulley",
+  "error": "['wasmtime', 'run', '--allow-precompiled', 'out/wasm/fannkuch.pulley', '11']: exit 1: Error: failed deserialization for: out/wasm/fannkuch.pulley\n\nCaused by:\n    Module was compiled for architecture 'pulley64'\n\nCommand exited with non-zero status 1\nTIME 0.00 12128\n"
+ },
+ {
+  "program": "fannkuch",
+  "engine": "libriscv",
+  "wall_s": 17.431131965990062,
+  "rss_kib": 9504,
+  "output_ok": true
+ },
+ {
+  "program": "fannkuch",
+  "engine": "libriscv-bintr",
+  "translate_s": 76.93291615998896,
+  "wall_s": 7.442023920011707,
+  "rss_kib": 12144,
+  "output_ok": true
+ },
+ {
+  "program": "spectralnorm",
+  "engine": "native",
+  "wall_s": 0.16745762499340344,
+  "rss_kib": 1312,
+  "output_ok": true
+ },
+ {
+  "program": "spectralnorm",
+  "engine": "wasmtime",
+  "wall_s": 0.12043483399611432,
+  "rss_kib": 15084,
+  "output_ok": true
+ },
+ {
+  "program": "spectralnorm",
+  "engine": "wasmtime-pulley",
+  "error": "['wasmtime', 'run', '--allow-precompiled', 'out/wasm/spectralnorm.pulley', '2000']: exit 1: Error: failed deserialization for: out/wasm/spectralnorm.pulley\n\nCaused by:\n    Module was compiled for architecture 'pulley64'\n\nCommand exited with non-zero status 1\nTIME 0.00 12128\n"
+ },
+ {
+  "program": "spectralnorm",
+  "engine": "libriscv",
+  "wall_s": 2.7595055010024225,
+  "rss_kib": 9360,
+  "output_ok": true
+ },
+ {
+  "program": "spectralnorm",
+  "engine": "libriscv-bintr",
+  "translate_s": 75.87763745100528,
+  "wall_s": 0.4597943330009002,
+  "rss_kib": 9884,
+  "output_ok": true
+ },
+ {
+  "program": "mandelbrot",
+  "engine": "native",
+  "wall_s": 0.6648097089928342,
+  "rss_kib": 1184,
+  "output_ok": true
+ },
+ {
+  "program": "mandelbrot",
+  "engine": "wasmtime",
+  "wall_s": 0.7334802920086076,
+  "rss_kib": 14956,
+  "output_ok": true
+ },
+ {
+  "program": "mandelbrot",
+  "engine": "wasmtime-pulley",
+  "error": "['wasmtime', 'run', '--allow-precompiled', 'out/wasm/mandelbrot.pulley', '4000']: exit 1: Error: failed deserialization for: out/wasm/mandelbrot.pulley\n\nCaused by:\n    Module was compiled for architecture 'pulley64'\n\nCommand exited with non-zero status 1\nTIME 0.00 12128\n"
+ },
+ {
+  "program": "mandelbrot",
+  "engine": "libriscv",
+  "wall_s": 4.275504377001198,
+  "rss_kib": 9696,
+  "output_ok": true
+ },
+ {
+  "program": "mandelbrot",
+  "engine": "libriscv-bintr",
+  "translate_s": 75.24306682600582,
+  "wall_s": 2.8757945010002004,
+  "rss_kib": 11760,
+  "output_ok": true
+ },
+ {
+  "program": "binarytrees",
+  "engine": "native",
+  "wall_s": 0.7025795419904171,
+  "rss_kib": 33960,
+  "output_ok": true
+ },
+ {
+  "program": "binarytrees",
+  "engine": "wasmtime",
+  "wall_s": 1.1210417080001207,
+  "rss_kib": 31192,
+  "output_ok": true
+ },
+ {
+  "program": "binarytrees",
+  "engine": "wasmtime-pulley",
+  "error": "['wasmtime', 'run', '--allow-precompiled', 'out/wasm/binarytrees.pulley', '18']: exit 1: Error: failed deserialization for: out/wasm/binarytrees.pulley\n\nCaused by:\n    Module was compiled for architecture 'pulley64'\n\nCommand exited with non-zero status 1\nTIME 0.00 12128\n"
+ },
+ {
+  "program": "binarytrees",
+  "engine": "libriscv",
+  "wall_s": 17.96197859100357,
+  "rss_kib": 41208,
+  "output_ok": true
+ },
+ {
+  "program": "binarytrees",
+  "engine": "libriscv-bintr",
+  "translate_s": 76.75098540900217,
+  "wall_s": 4.220993335999083,
+  "rss_kib": 43348,
+  "output_ok": true
+ },
+ {
+  "program": "sha256",
+  "engine": "native",
+  "wall_s": 0.4928867499984335,
+  "rss_kib": 2208,
+  "output_ok": true
+ },
+ {
+  "program": "sha256",
+  "engine": "wasmtime",
+  "wall_s": 0.43769691699708346,
+  "rss_kib": 15780,
+  "output_ok": true
+ },
+ {
+  "program": "sha256",
+  "engine": "wasmtime-pulley",
+  "error": "['wasmtime', 'run', '--allow-precompiled', 'out/wasm/sha256.pulley', '128']: exit 1: Error: failed deserialization for: out/wasm/sha256.pulley\n\nCaused by:\n    Module was compiled for architecture 'pulley64'\n\nCommand exited with non-zero status 1\nTIME 0.00 12124\n"
+ },
+ {
+  "program": "sha256",
+  "engine": "libriscv",
+  "wall_s": 9.45449933699274,
+  "rss_kib": 9508,
+  "output_ok": true
+ },
+ {
+  "program": "sha256",
+  "engine": "libriscv-bintr",
+  "translate_s": 75.26308149300166,
+  "wall_s": 1.5283269169885898,
+  "rss_kib": 12196,
+  "output_ok": true
+ },
+ {
+  "program": "sort",
+  "engine": "native",
+  "wall_s": 0.4169280000060098,
+  "rss_kib": 39964,
+  "output_ok": true
+ },
+ {
+  "program": "sort",
+  "engine": "wasmtime",
+  "wall_s": 1.8869271680014208,
+  "rss_kib": 34408,
+  "output_ok": true
+ },
+ {
+  "program": "sort",
+  "engine": "wasmtime-pulley",
+  "error": "['wasmtime', 'run', '--allow-precompiled', 'out/wasm/sort.pulley', '5000000']: exit 1: Error: failed deserialization for: out/wasm/sort.pulley\n\nCaused by:\n    Module was compiled for architecture 'pulley64'\n\nCommand exited with non-zero status 1\nTIME 0.00 12128\n"
+ },
+ {
+  "program": "sort",
+  "engine": "libriscv",
+  "wall_s": 2.933397626999067,
+  "rss_kib": 30348,
+  "output_ok": false
+ },
+ {
+  "program": "sort",
+  "engine": "libriscv-bintr",
+  "translate_s": 75.46683595101058,
+  "wall_s": 1.5522034999885364,
+  "rss_kib": 33048,
+  "output_ok": false
+ },
+ {
+  "program": "hashmap",
+  "engine": "native",
+  "wall_s": 0.19161454199638683,
+  "rss_kib": 66768,
+  "output_ok": true
+ },
+ {
+  "program": "hashmap",
+  "engine": "wasmtime",
+  "wall_s": 0.2382389999984298,
+  "rss_kib": 80364,
+  "output_ok": true
+ },
+ {
+  "program": "hashmap",
+  "engine": "wasmtime-pulley",
+  "error": "['wasmtime', 'run', '--allow-precompiled', 'out/wasm/hashmap.pulley', '20000000']: exit 1: Error: failed deserialization for: out/wasm/hashmap.pulley\n\nCaused by:\n    Module was compiled for architecture 'pulley64'\n\nCommand exited with non-zero status 1\nTIME 0.00 12120\n"
+ },
+ {
+  "program": "hashmap",
+  "engine": "libriscv",
+  "wall_s": 2.0279830430081347,
+  "rss_kib": 76608,
+  "output_ok": true
+ },
+ {
+  "program": "hashmap",
+  "engine": "libriscv-bintr",
+  "translate_s": 74.56982874200912,
+  "wall_s": 0.3827379589929478,
+  "rss_kib": 78692,
+  "output_ok": true
+ },
+ {
+  "program": "hello (start-up)",
+  "engine": "native",
+  "wall_s": 0.0004902500077150762,
+  "rss_kib": 992
+ },
+ {
+  "program": "hello (start-up)",
+  "engine": "wasmtime",
+  "wall_s": 0.02248883299762383,
+  "rss_kib": 14892
+ },
+ {
+  "program": "hello (start-up)",
+  "engine": "wasmtime-pulley",
+  "error": "['wasmtime', 'run', '--allow-precompiled', 'out/wasm/hello.pulley']: exit 1: Error: failed deserialization for: out/wasm/hello.pulley\n\nCaused by:\n    Module was compiled for architecture 'pulley64'\n\nCommand exited with non-zero status 1\nTIME 0.00 12116\n"
+ },
+ {
+  "program": "hello (start-up)",
+  "engine": "libriscv",
+  "wall_s": 0.003911459003575146,
+  "rss_kib": 7684
+ },
+ {
+  "program": "hello (start-up)",
+  "engine": "libriscv-bintr",
+  "wall_s": 0.003308708008262329,
+  "rss_kib": 11752
+ }
+]

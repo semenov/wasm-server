@@ -269,6 +269,28 @@ The Go builds use `-gc=leaking -scheduler=none` except the last column.
 - **C costs the most to write:** manual buffers, escaping and memory
   management, and a verbose binding API.
 
+### Plumb (2026-10-13)
+
+The same notes app in [Plumb](https://github.com/semenov/plumb)
+(`benchmarks/wasm-server` there: 34 lines of code), built with `plumb build
+--target wasm-server`, against the C and Rust guests in one run: the server
+pinned to CPUs 0-7 and oha to 8-13 (`taskset`), three rounds taking turns,
+medians. Plumb's GET makes one host call fewer (it has no cache API yet).
+
+| | C | Rust | Plumb |
+|---|---|---|---|
+| Lines of app code | 203 | 85 | 34 |
+| `.wasm` | 55 KB | 147 KB | 161 KB |
+| GET: 20 notes, JSON | 88.5k RPS | 88.9k RPS | 83.0k RPS (94%) |
+| POST: SQLite insert | 31.2k RPS | 30.7k RPS | 29.2k RPS (93%) |
+| Instantiations/s, 8 threads | 527k | 569k | 516k |
+
+- **Plumb is about 6% behind on GET and 7% on POST:** its runtime starts
+  the program (`main`, the router) on every request and decodes rows and
+  encodes JSON generically.
+- **Pinning matters on the Docker VM:** without it, runs on the same machine
+  differed by up to 15%; with it by 1-4%.
+
 ## Native Go vs wasm (the same notes app)
 
 `bench/native-go`: the notes app as an ordinary Go server (`net/http`,
@@ -410,6 +432,139 @@ What this shows:
   for the whole container, so oha (also Rust on glibc) got it too, and Rust
   "got" 25–40% faster. Applied to the server alone, the speedup disappeared.
   The load generator's own allocator affects these numbers.
+
+## Noisy neighbour: one app's heavy requests vs another app (`bench/noisy.py`)
+
+Two apps on one server:
+- **Victim:** `hello`, at a steady 1,000 requests/s.
+- **Noisy:** `compute?fib=33`, about 20 ms of CPU per request, like an
+  argon2 login. More and more connections drive it.
+
+Victim latency counts from each request's scheduled send time (oha's
+latency correction), so waiting behind the noise counts. The server is
+pinned to as many CPUs as it has workers.
+
+The control (`--separate`) runs each app in its own `wasm-server` process
+on the same CPUs, so the kernel shares them out as it would with a process
+per app. Measured on 2026-10-10; raw numbers:
+`results/linux-docker-noisy*.json`.
+
+| Workers (CPUs) | Noisy connections | Noisy RPS, one server / separate | Victim p50, one server | Victim p99, one server | Victim p99, separate processes |
+|---|---|---|---|---|---|
+| 8 | 0 | – | 0.5 ms | 2.8 ms | 1.9 ms |
+| 8 | 1 | 47 / 48 | 0.1 ms | **24 ms** | 0.3 ms |
+| 8 | 8 | 278 / 233 | 11 ms | **88 ms** | 0.2 ms |
+| 8 | 32 | 374 / 374 | 99 ms | **249 ms** | 1.7 ms |
+| 1 | 0 | – | 0.6 ms | 2.8 ms | 3.5 ms |
+| 1 | 1 | 46 / 45 | 23 ms | **46 ms** | 1.1 ms |
+| 1 | 4 | 46 / 47 | 130 ms | **162 ms** | 1.1 ms |
+
+The victim got all of its 1,000 requests/s in every row, and all
+responses were `200`.
+
+- **One server: the victim's latency grows with the neighbour's load.** It
+  climbs from 2.8 ms to 249 ms on 8 cores and to 162 ms on 1 core.
+  - **With 7 cores idle:** a single noisy connection still raises the
+    victim's p99 to 24 ms. The victim's connections that landed on the busy
+    worker wait, and no other worker takes them.
+  - **Why it adds up:** a request passes several await points (read,
+    instantiate, handler, write). Each wake-up queues behind every running
+    heavy guest, and each of those runs a full 10 ms epoch tick before
+    yielding. So a 50 µs request waits several rounds of 10 ms × the number
+    of heavy guests.
+- **Separate processes: the victim is unaffected,** at 0.2–1.7 ms p99 even on
+  one core, and the noisy app keeps the same throughput.
+  - The kernel's scheduler preempts a CPU-bound thread as soon as a thread
+    that was sleeping wakes up, with sub-millisecond granularity.
+  - Our scheduler is a cooperative round-robin with 10 ms slices and no
+    notion of which app a task belongs to.
+- **A first version of the test used 32 victim connections.** They could
+  not sustain 1,000 requests/s when each took about 120 ms, and the backlog
+  showed up as seconds of latency. That measured the client, not the
+  server; 256 connections fixed it.
+
+## Sandboxes: wasm vs RISC-V (libriscv)
+
+Is a RISC-V emulator a faster sandbox than wasm? `bench/riscv`: wasmtime
+49 vs libriscv (commit 2925e57) on the same code; Linux arm64 in the Docker
+VM, one pinned CPU. Measured on 2026-10-10. Raw numbers:
+`results/sandbox-*.json*`.
+
+The engines:
+- **wasmtime:** Cranelift, and Pulley, its interpreter.
+- **libriscv:** its interpreter, and binary translation (RISC-V → C → gcc
+  → native code). libriscv's own docs call translation "NOT safe for
+  sandboxing".
+
+PolkaVM is not measured: its recompiler exists only for x86-64, and under
+emulation its sandbox doesn't start (see `bench/riscv/README.md`).
+
+**Standard programs** (each engine's CLI, best of 3 runs; × = time
+relative to native):
+
+| Program | native (gcc) | wasmtime | wasmtime Pulley (interpreter) | libriscv interpreter | libriscv + translation (unsafe) |
+|---|---|---|---|---|---|
+| CoreMark | 2.53 s | 1.2× | 23× | 16× | 3.0× |
+| nbody (floating point) | 0.37 s | 1.1× | 53× | 23× | 8.1× |
+| fannkuch (integers) | 1.93 s | 1.0× | 15× | 9.0× | 3.8× |
+| spectral-norm | 0.17 s | 0.7× | 32× | 17× | 2.7× |
+| mandelbrot | 0.66 s | 1.1× | 23× | 6.4× | 4.3× |
+| binary-trees (malloc) | 0.70 s | 1.6× | 29× | 26× | 6.0× |
+| sha256 | 0.49 s | 0.9× | 30× | 19× | 3.1× |
+| qsort | 0.42 s | 4.5× | 111× | 7.0× | 3.7× |
+| hash map (cache misses) | 0.19 s | 1.2× | 15× | 11× | 2.0× |
+| **Geometric mean** | | **1.26×** | 30× | 13× | 3.8× |
+| Start-up of an empty program (CLI) | 0.5 ms | 22.5 ms | 1.6 ms | 3.9 ms | 3.3 ms |
+
+- **CoreMark scores:**
+
+  | | Iterations/s |
+  |---|---|
+  | native | 38,870 |
+  | wasmtime | 33,081 |
+  | libriscv + translation | 13,053 |
+  | libriscv interpreter | 2,460 |
+  | Pulley | 1,717 |
+
+- **Translation is slow to produce:** about 75 s per program, because gcc
+  compiles the whole static glibc. The result is cached.
+- **Outputs:** all matched native.
+  - CoreMark differs only in its timing lines and the "run at least 10 s"
+    warning.
+  - libriscv's `qsort` output adds an "Unhandled system call: 179"
+    (`sysinfo`) line.
+- **wasm runs below 1.0×:** clang 20 (wasm) beats gcc 12 (native) on
+  those programs.
+- **qsort on wasm:** 4.5× comes from wasi-libc's `qsort`, not from
+  wasmtime.
+
+**Inside a host process** (`rv_bench.cpp`, `wasmtime-bench`; the same C
+functions; wasmtime configured like the server, with an epoch deadline;
+libriscv with an instruction limit):
+
+| | wasmtime | libriscv interpreter | libriscv + translation |
+|---|---|---|---|
+| fib(27) (native 0.48 ms) | 1.18 ms | 5.3 ms | 2.2 ms |
+| sieve 1M (native 2.3 ms) | 2.4 ms | 17–19 ms | 5.7–6.1 ms |
+| Call into a live sandbox | 11.0 ns | **4.4 ns** | 5.7–5.9 ns |
+| Fresh sandbox + call | **1.3 µs** | 9.1 µs (fork) | 9.8 µs (fork) |
+| Fresh sandbox, writes 64 KiB | **2.9 µs** | 17.5 µs | 14.6 µs |
+| Fresh sandbox, writes 1 MiB | **31 µs** | 120 µs | 76 µs |
+| Memory per live sandbox (64 KiB written) | **72 KiB** | 107 KiB | 105 KiB |
+| Load and start a program (ELF, glibc start-up) | 1.4–9.3 ms (compile) | 3.6 ms | 47–87 s (first translation) |
+
+- **libriscv's "fast fork"** (`minimal_fork`, about 80 ns, used by its C
+  API and its per-request isolation example) doesn't lend the template's
+  pages to the fork. The fork runs without the program's initialized
+  memory. In our tests the host process crashed (segfault) as soon as such
+  a fork wrote memory. The numbers above use the full copy-on-write fork,
+  and an isolation check confirms the template stays unchanged.
+- **Without forks** (the flat-arena build) a fresh libriscv sandbox means
+  loading the ELF and running the C runtime's start-up: about 0.7 ms.
+- **The first run of this test was wrong.** Nothing read the buffer the
+  guest wrote, so both compilers removed the writes, and "writes 1 MiB"
+  measured an empty loop. A function that reads it back (`peek`) fixed
+  that.
 
 ## Rust guest size: what's inside
 

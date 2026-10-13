@@ -1,0 +1,15 @@
+[package]
+name = "wasmtime-bench"
+version = "0.1.0"
+edition = "2024"
+
+# Not part of the server's workspace.
+[workspace]
+
+[dependencies]
+# The server's version and settings.
+wasmtime = { version = "49", default-features = false, features = ["cranelift", "pooling-allocator", "runtime", "std"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

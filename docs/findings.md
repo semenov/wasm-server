@@ -47,21 +47,104 @@ tokio-postgres server, all on the same Postgres and the same 8 CPUs
     `MALLOC_MMAP_THRESHOLD_` fixes it; `MALLOC_ARENA_MAX` does not.
   - Untrusted apps can't be relied on to tune their allocator, so this is a
     real argument for per-request linear memory.
-- **Our weak spot is head-of-line blocking.**
-  - **The problem:** a CPU-heavy request (25 ms argon2) delays the other
-    requests on its worker. In a mix with 2% logins, cheap endpoints had a
-    p99 of 50–66 ms on wasm vs 16–19 ms native; without the logins the
-    difference disappears.
-  - **Why:** thread-per-core keeps a request on the worker that accepted it,
-    and guests yield only every 10 ms epoch tick.
-  - **Possible fixes:**
-    - work stealing (tokio's multi-thread runtime) at some cost per request;
-    - shorter ticks for guests that have run a long time;
-    - moving CPU-heavy instances off the accepting worker.
+- **Our weak spot is head-of-line blocking.** A CPU-heavy request (25 ms
+  argon2) delays the other requests on its worker. In a mix with 2% logins,
+  cheap endpoints had a p99 of 50–66 ms on wasm vs 16–19 ms native; without
+  the logins the difference disappears. See the next section.
+
+### Many apps on one server: noisy neighbours (2026-10-10)
+
+`bench/noisy.py`: one app sends 20 ms CPU requests, another app gets cheap
+requests at a steady rate. Both apps run either in one `wasm-server` or as
+separate processes on the same CPUs.
+
+- **In one server, a heavy app degrades every app that shares its workers.**
+  - The victim's p99 rose from 2.8 ms to 249 ms on 8 cores and to 162 ms on
+    1 core.
+  - Even one heavy connection on an otherwise idle 8-core server gave 24 ms.
+- **As separate processes the victim stayed at 0.2–1.7 ms,** even on one
+  core, with no loss for the heavy app.
+- **This is the price of one process for many apps:** the kernel's fair
+  scheduler no longer separates them, so the host has to.
+  - **Present:** a per-request CPU limit.
+  - **Missing:** fairness between apps, or between short and long requests.
+  - **Why it hurts:**
+    - Thread-per-core keeps a request on the worker that accepted it.
+    - Guests yield only every 10 ms, into a plain round-robin that knows
+      nothing about apps.
+    - Each await point of a short request then waits a full round.
+- **Direction: let the kernel do what it is good at.** The host already
+  measures each request's CPU in the epoch callback.
+  - **The fast path:** short requests stay on the per-core workers.
+  - **Heavy requests move off it:** once a request passes a few ms of CPU,
+    its (boxed, `Send`) future moves to a separate pool of threads with
+    lower priority (`nice` or `SCHED_IDLE`). The kernel then preempts heavy
+    guests whenever a worker has something to do.
+  - **Fairness between apps on the heavy pool:** a per-app limit on
+    concurrent heavy requests, or cgroup v2 threaded mode.
+  - **To check after the change:** that `hello`'s 33 µs per request
+    doesn't grow. `bench/noisy.py` and `bench/native-conduit/compare.sh`
+    measure the effect.
 - **Benchmark hygiene:** environment variables given to the whole benchmark
   container also reach the load generator. A glibc setting meant for the
   server made oha faster and the server look 25–40% faster. Set server-only
   settings on the server alone.
+
+## RISC-V instead of wasm? (2026-10-10)
+
+Some projects use a RISC-V emulator as the sandbox:
+- **libriscv:** game scripting, per-request isolation.
+- **PolkaVM:** Polkadot's smart contracts, which moved off wasm.
+
+The claim is that it's faster. Measured in `bench/riscv` (numbers in
+`BENCHMARKS.md`):
+
+- **"Faster" holds for calls into an already-running sandbox.**
+  libriscv: 4.4 ns, wasmtime: 11 ns. That matters for game scripts that
+  call into the guest thousands of times per frame, not for us. A request
+  costs us about 33 µs of host work.
+- **libriscv's safe mode is an interpreter, 13× slower than native** on
+  standard programs (geometric mean). wasmtime is 1.26×. Its binary
+  translation (3.8×) is unsafe for untrusted code, according to its own
+  docs. It also takes about 75 s per program to produce (gcc over the whole
+  static libc).
+- **Interpreter against interpreter, libriscv wins:** 13× vs Pulley's 30×.
+  RISC-V's register machine is easy to interpret well. If a platform has no
+  JIT (iOS, some embedded systems), that's a real argument for it.
+- **A fresh sandbox per request is cheaper in wasmtime:**
+  - 1.3 µs vs 9 µs (a full copy-on-write fork);
+  - 2.9 vs 17.5 µs with 64 KiB written;
+  - 72 vs 107 KiB per live sandbox.
+
+  libriscv's 80 ns "fast fork" doesn't copy the running program's memory,
+  and in our tests it crashed the host once the fork wrote memory.
+- **PolkaVM's ideas** (from its README and source):
+  - an rv32e/rv64e subset whose 16 registers map 1:1 onto x86-64's, so a
+    single-pass O(n) recompiler without register allocation;
+  - compilation that is fast and immune to "JIT bombs";
+  - an offline linker (`polkatool`) that ships a pre-validated compact
+    blob;
+  - guests in a separate process (namespaces, seccomp, `userfaultfd`), a
+    second line of defence if the VM itself is broken;
+  - no 4 GiB virtual reservation per instance;
+  - built-in deterministic gas metering.
+
+  Its own goal for speed is "within the same order of magnitude" as wasm
+  VMs. The bet is compile time, determinism and defence in depth, not raw
+  speed. It is x86-64 only for the recompiler, has no floating point or
+  SIMD, and calls itself "very heavy work-in-progress, do not use in
+  production".
+- **For us: stay on wasm.**
+  - wasm gives near-native speed with a mature, verified compiler;
+  - it has the cheapest fresh-instance-per-request (pooling + CoW);
+  - it supports many guest languages (WASI, the component model).
+
+  **Worth borrowing from PolkaVM:**
+  - **A separate process as a second sandbox layer for untrusted apps:**
+    it would also give the kernel-level CPU fairness that the
+    noisy-neighbour test showed we lack.
+  - **Fast, linear-time compilation:** for agents that deploy often.
+    wasmtime's Winch is the equivalent to try.
 
 ## Guest languages
 

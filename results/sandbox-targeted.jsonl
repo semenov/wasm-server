@@ -1,0 +1,47 @@
+{"engine": "native", "test": "fib(27)", "value": 481.333, "unit": "us", "check": 196418}
+{"engine": "native", "test": "sieve(1M)", "value": 2269.542, "unit": "us", "check": 82025}
+{"engine": "native", "test": "mix(100)", "value": 1332.083, "unit": "us", "check": -5319359162780182634}
+{"engine": "native", "test": "call noop", "value": 1.359, "unit": "ns", "check": 10000000}
+{"engine": "wasmtime", "test": "compile module (Cranelift)", "value": 9298.209, "unit": "us", "check": 0}
+{"engine": "wasmtime", "test": "fib(27)", "value": 1175.875, "unit": "us", "check": 196418}
+{"engine": "wasmtime", "test": "sieve(1M)", "value": 2379.708, "unit": "us", "check": 82025}
+{"engine": "wasmtime", "test": "mix(100)", "value": 1303.125, "unit": "us", "check": -5319359162780182634}
+{"engine": "wasmtime", "test": "call noop", "value": 10.960, "unit": "ns", "check": 2000000}
+{"engine": "wasmtime", "test": "per request: new sandbox + noop", "value": 1.323, "unit": "us", "check": 0}
+{"engine": "wasmtime", "test": "per request: new sandbox + touch 64 KiB", "value": 2.939, "unit": "us", "check": 0}
+{"engine": "wasmtime", "test": "per request: new sandbox + touch 1 MiB", "value": 32.243, "unit": "us", "check": 0}
+{"engine": "wasmtime", "test": "memory per live sandbox (64 KiB written)", "value": 72.448, "unit": "KiB", "check": 0}
+{"engine": "libriscv-interp", "test": "load + boot (first, incl. translation)", "value": 3630.083, "unit": "us", "check": 0}
+{"engine": "libriscv-interp", "test": "fib(27)", "value": 5270.667, "unit": "us", "check": 196418}
+{"engine": "libriscv-interp", "test": "sieve(1M)", "value": 18580.834, "unit": "us", "check": 82025}
+{"engine": "libriscv-interp", "test": "mix(100)", "value": 9516.000, "unit": "us", "check": -5319359162780182634}
+{"engine": "libriscv-interp", "test": "call noop", "value": 4.438, "unit": "ns", "check": 2000000}
+{"engine": "libriscv-interp", "test": "per request: new sandbox + noop", "value": 711.180, "unit": "us", "check": 0}
+{"engine": "libriscv-fork-interp", "test": "load + boot (first, incl. translation)", "value": 3984.792, "unit": "us", "check": 0}
+{"engine": "libriscv-fork-interp", "test": "fib(27)", "value": 5624.000, "unit": "us", "check": 196418}
+{"engine": "libriscv-fork-interp", "test": "sieve(1M)", "value": 17337.750, "unit": "us", "check": 82025}
+{"engine": "libriscv-fork-interp", "test": "mix(100)", "value": 9461.334, "unit": "us", "check": -5319359162780182634}
+{"engine": "libriscv-fork-interp", "test": "call noop", "value": 4.375, "unit": "ns", "check": 2000000}
+{"engine": "libriscv-fork-interp", "test": "per request: new sandbox + noop", "value": 9.140, "unit": "us", "check": 0}
+{"engine": "libriscv-fork-interp", "test": "per request: new sandbox + touch 64 KiB", "value": 17.511, "unit": "us", "check": 0}
+{"engine": "libriscv-fork-interp", "test": "per request: new sandbox + touch 1 MiB", "value": 119.885, "unit": "us", "check": 0}
+{"engine": "libriscv-fork-interp", "test": "fork sees its own write (expect 64)", "value": 64.000, "unit": "byte", "check": 0}
+{"engine": "libriscv-fork-interp", "test": "template byte after fork wrote (expect unchanged)", "value": 0.000, "unit": "byte", "check": 0}
+{"engine": "libriscv-fork-interp", "test": "memory per live sandbox (64 KiB written)", "value": 107.008, "unit": "KiB", "check": 0}
+{"engine": "libriscv-bintr", "test": "load + boot (first, incl. translation)", "value": 86502376.915, "unit": "us", "check": 0}
+{"engine": "libriscv-bintr", "test": "fib(27)", "value": 2283.666, "unit": "us", "check": 196418}
+{"engine": "libriscv-bintr", "test": "sieve(1M)", "value": 5738.125, "unit": "us", "check": 82025}
+{"engine": "libriscv-bintr", "test": "mix(100)", "value": 3439.541, "unit": "us", "check": -5319359162780182634}
+{"engine": "libriscv-bintr", "test": "call noop", "value": 5.906, "unit": "ns", "check": 2000000}
+{"engine": "libriscv-bintr", "test": "per request: new sandbox + noop", "value": 715.338, "unit": "us", "check": 0}
+{"engine": "libriscv-fork-bintr", "test": "load + boot (first, incl. translation)", "value": 47286001.396, "unit": "us", "check": 0}
+{"engine": "libriscv-fork-bintr", "test": "fib(27)", "value": 2210.250, "unit": "us", "check": 196418}
+{"engine": "libriscv-fork-bintr", "test": "sieve(1M)", "value": 6085.375, "unit": "us", "check": 82025}
+{"engine": "libriscv-fork-bintr", "test": "mix(100)", "value": 1335.125, "unit": "us", "check": -5319359162780182634}
+{"engine": "libriscv-fork-bintr", "test": "call noop", "value": 5.674, "unit": "ns", "check": 2000000}
+{"engine": "libriscv-fork-bintr", "test": "per request: new sandbox + noop", "value": 9.792, "unit": "us", "check": 0}
+{"engine": "libriscv-fork-bintr", "test": "per request: new sandbox + touch 64 KiB", "value": 14.626, "unit": "us", "check": 0}
+{"engine": "libriscv-fork-bintr", "test": "per request: new sandbox + touch 1 MiB", "value": 76.036, "unit": "us", "check": 0}
+{"engine": "libriscv-fork-bintr", "test": "fork sees its own write (expect 64)", "value": 64.000, "unit": "byte", "check": 0}
+{"engine": "libriscv-fork-bintr", "test": "template byte after fork wrote (expect unchanged)", "value": 0.000, "unit": "byte", "check": 0}
+{"engine": "libriscv-fork-bintr", "test": "memory per live sandbox (64 KiB written)", "value": 105.472, "unit": "KiB", "check": 0}

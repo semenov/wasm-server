@@ -39,7 +39,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-cert
 COPY --from=build /usr/local/bin/wasm-server /usr/local/bin/oha /usr/local/bin/conduit-rust /usr/local/bin/
 COPY --from=go-build /conduit-go /usr/local/bin/conduit-go
 COPY --from=build /wasm /bench/wasm
-COPY bench/loadtest.py bench/catalog-sqlite.sql /bench/
+COPY bench/loadtest.py bench/noisy.py bench/catalog-sqlite.sql /bench/
 COPY examples /bench/examples
 COPY sites /bench/sites
 WORKDIR /bench
