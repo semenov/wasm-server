@@ -3,7 +3,6 @@ mod app;
 mod autoscale;
 mod backup;
 mod bench;
-mod billing;
 mod cluster;
 mod bindings;
 mod client;
@@ -24,6 +23,7 @@ mod routes;
 mod server;
 mod static_files;
 mod storage;
+mod usage;
 mod stats;
 mod tls;
 mod versions;
@@ -60,7 +60,7 @@ enum Command {
         #[arg(long, conflicts_with_all = ["apps", "statics", "databases"])]
         config: Option<PathBuf>,
         /// Token for /_platform/ (also WASM_SERVER_ADMIN_TOKEN). Enables
-        /// reloads and deploys, and protects stats and billing.
+        /// reloads and deploys, and protects stats and usage.
         #[arg(long, env = "WASM_SERVER_ADMIN_TOKEN", hide_env_values = true)]
         admin_token: Option<String>,
         /// App to deploy as NAME=PATH (`.cwasm` or `.wasm`). Requests to
@@ -120,15 +120,6 @@ enum Command {
         /// APP=PATH (e.g. chat=/ws). The app exports platform:sdk/websocket-handler.
         #[arg(long = "websocket", value_parser = parse_pair)]
         websockets: Vec<(String, String)>,
-        /// Credits granted to an app or site, as NAME=CREDITS. When they're
-        /// used up, it gets 402 (HTTP), refused WebSockets and postponed
-        /// events. Apps without a grant are only metered.
-        #[arg(long = "credits", value_parser = parse_pair)]
-        credits: Vec<(String, String)>,
-        /// Prices in credits per unit, as a JSON object overriding the
-        /// defaults, e.g. {"cpu": 0.1}. See `wasm-server pricing`.
-        #[arg(long)]
-        pricing: Option<PathBuf>,
         /// Snapshot SQLite databases into this directory (gzipped).
         #[arg(long)]
         backup_dir: Option<PathBuf>,
@@ -138,7 +129,7 @@ enum Command {
         /// Snapshots kept per database.
         #[arg(long, default_value_t = 24)]
         backup_keep: usize,
-        /// Where the platform keeps its state (queues, billing, versions).
+        /// Where the platform keeps its state (queues, metrics, versions).
         #[arg(long, default_value = "data")]
         data_dir: PathBuf,
         /// Threads delivering queue messages and cron ticks.
@@ -237,8 +228,6 @@ enum Command {
         #[command(flatten)]
         engine: EngineArgs,
     },
-    /// Print the default price list (credits per unit).
-    Pricing,
     /// Upload a new version of an app to a running server (no downtime).
     Deploy {
         /// The server, e.g. http://127.0.0.1:8080
@@ -270,8 +259,6 @@ enum Command {
         #[arg(long, env = "WASM_SERVER_ADMIN_TOKEN", hide_env_values = true)]
         token: Option<String>,
     },
-    /// Print the SHA-256 of a tenant token, for `token_sha256` in the deployment.
-    HashToken { token: String },
     /// Restore a SQLite database from a snapshot (with the server stopped).
     Restore {
         /// Snapshot (`.db.gz`) or SQLite file.
@@ -367,8 +354,6 @@ fn main() -> Result<()> {
             crons,
             links,
             websockets,
-            credits,
-            pricing,
             backup_dir,
             backup_every_min,
             backup_keep,
@@ -426,7 +411,6 @@ fn main() -> Result<()> {
                     crons,
                     links,
                     websockets,
-                    credits,
                     envs,
                     outbound,
                 })?),
@@ -472,20 +456,11 @@ fn main() -> Result<()> {
 
             let workers = workers.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
             let job_workers = job_workers.max(1);
-            let billing = billing::Billing::new(
-                &data_dir.join("billing.db"),
-                billing::Pricing::load(pricing.as_deref())?,
-                &accounts.names(),
-                &current.credits,
-            )?;
             let jobs = jobs::JobStore::open(&data_dir.join("platform.db"))?;
             match &admin_token {
                 Some(token) if token.len() < 16 => wasmtime::bail!("--admin-token must be at least 16 characters"),
                 Some(_) => {}
-                None if current.deployment.tenants.is_empty() => {
-                    eprintln!("note: no --admin-token: /_platform/ is read-only and open to anyone who can reach the server")
-                }
-                None => eprintln!("note: no --admin-token: tenants can manage their apps; reloads and backups are disabled"),
+                None => eprintln!("note: no --admin-token: /_platform/ is read-only and open to anyone who can reach the server"),
             }
             let platform = Arc::new(platform::Platform::new(platform::Parts {
                 current,
@@ -498,7 +473,6 @@ fn main() -> Result<()> {
                 db_pool_size,
                 db_tls,
                 jobs: if join.is_some() { None } else { Some(jobs) },
-                billing,
                 admin_token,
                 data_dir: data_dir.clone(),
                 backups: backup_dir.map(|dir| backup::BackupConfig {
@@ -557,20 +531,9 @@ fn main() -> Result<()> {
         Command::Reload { url, token } => client::reload(&url, token.as_deref())?,
         Command::Versions { url, app, token } => client::versions(&url, &app, token.as_deref())?,
         Command::Rollback { url, app, to, token } => client::rollback(&url, &app, to.as_deref(), token.as_deref())?,
-        Command::HashToken { token } => {
-            use sha2::Digest;
-            println!("{}", versions::hex(&sha2::Sha256::digest(token.as_bytes())));
-        }
         Command::Restore { backup: file, to } => {
             backup::restore(&file, &to)?;
             eprintln!("restored {} from {}", to.display(), file.display());
-        }
-        Command::Pricing => {
-            println!("{:<22} {:<11} {:>12}  {:<18} {}", "meter", "category", "credits", "per", "what");
-            for m in &billing::METERS {
-                println!("{:<22} {:<11} {:>12}  {:<18} {}", m.key, m.category, m.price, m.unit, m.description);
-            }
-            println!("\n1 credit ≈ $0.001 at these prices. Override any with --pricing FILE (JSON).");
         }
         Command::Bench { app, mode, threads, seconds, path, engine: engine_args } => {
             let opts = engine_args.opts(engine::EngineOpts::default().max_memory);

@@ -2,12 +2,12 @@
 //!
 //! | Path | Method | Who | What |
 //! |---|---|---|---|
-//! | `/_platform/` | GET | any | usage and billing dashboard |
+//! | `/_platform/` | GET | any | what each project uses: requests, CPU, traffic, disk |
 //! | `requests` | GET | any | charts of an app's requests, times and errors (from `metrics`) |
-//! | `billing`, `stats`, `jobs` | GET | any | JSON (a tenant sees its own apps) |
-//! | `metrics?app=NAME&range=24h` | GET | any (a tenant: its apps) | requests, errors, percentiles and where the time went, by minute (`project=NAME`: all its apps together) |
+//! | `usage?range=24h`, `stats`, `jobs` | GET | any | JSON |
+//! | `metrics?app=NAME&range=24h` | GET | any | requests, errors, percentiles and where the time went, by minute (`project=NAME`: all its apps together) |
 //! | `apps/NAME/logs[?lines=N\|since=OFFSET]` | GET | owner | the app's log (text; `x-log-offset` for following it) |
-//! | `whoami` | GET | any | `{"role": "admin" \| "tenant" \| "anonymous"}`: checks a token |
+//! | `whoami` | GET | any | `{"role": "admin" \| "anonymous"}`: checks a token |
 //! | `apps/NAME` | PUT | owner | upload a new component, then reload |
 //! | `projects/NAME/deploy` | POST | admin | create or update a project: its apps with their settings (`managed.rs`) |
 //! | `projects/NAME/secrets` | GET, PUT | admin | a deployed project's secret names; set or remove secrets |
@@ -17,9 +17,8 @@
 //! | `backups` | GET | admin | database snapshots |
 //! | `databases/NAME/backup` | POST | admin | take a snapshot now |
 //!
-//! Callers: the admin (`--admin-token`), tenants (their token's SHA-256 is
-//! in the deployment), or anonymous, which is allowed read-only only when
-//! neither is configured (local development). A token goes in
+//! Callers: the admin (`--admin-token`), or anonymous, which is allowed
+//! read-only only when there is no admin token (local development). A token goes in
 //! `Authorization: Bearer T` or the `platform_token` cookie, which `?token=T`
 //! sets for browsers.
 
@@ -32,7 +31,6 @@ use http_body_util::{BodyExt, Limited};
 use hyper::body::Incoming;
 use hyper::header::{self, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -46,28 +44,8 @@ const COOKIE: &str = "platform_token";
 #[derive(Clone, PartialEq)]
 enum Principal {
     Admin,
-    Tenant(String),
-    /// No admin token or tenants configured: read-only.
+    /// No admin token configured: read-only.
     Anonymous,
-}
-
-impl Principal {
-    /// Whether this caller may manage the app or site `name`.
-    fn owns(&self, platform: &Platform, name: &str) -> bool {
-        match self {
-            Principal::Admin => true,
-            Principal::Tenant(t) => platform.current().deployment.tenant_of(name) == Some(t.as_str()),
-            Principal::Anonymous => false,
-        }
-    }
-
-    /// Whether this caller may see the usage of account `name`.
-    fn sees(&self, platform: &Platform, name: &str) -> bool {
-        match self {
-            Principal::Admin | Principal::Anonymous => true,
-            tenant => tenant.owns(platform, name),
-        }
-    }
 }
 
 fn respond(status: StatusCode, content_type: &'static str, content: impl Into<Bytes>) -> Response<HyperOutgoingBody> {
@@ -100,27 +78,20 @@ fn authenticate(platform: &Platform, req: &Request<Incoming>) -> Option<(Princip
         v.split(';').find_map(|kv| kv.trim().strip_prefix(&format!("{COOKIE}=")).map(str::to_string))
     });
     let query = req.uri().query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("token=").map(str::to_string)));
-    let tenants = platform.current().deployment.tenants.clone();
     let (token, from_query) = match (bearer.or(cookie), query) {
         (Some(t), _) => (t, false),
         (None, Some(t)) => (t, true),
         (None, None) => {
-            return (platform.admin_token.is_none() && tenants.is_empty()).then_some((Principal::Anonymous, None));
+            return platform.admin_token.is_none().then_some((Principal::Anonymous, None));
         }
     };
-    let principal = if platform.admin_token.as_deref().is_some_and(|admin| same(admin.as_bytes(), token.as_bytes())) {
-        Principal::Admin
-    } else {
-        let hash = versions::hex(&Sha256::digest(token.as_bytes()));
-        let tenant = tenants.iter().find(|(_, t)| same(t.token_sha256.to_ascii_lowercase().as_bytes(), hash.as_bytes()))?;
-        Principal::Tenant(tenant.0.clone())
-    };
-    Some((principal, from_query.then_some(token)))
+    let admin = platform.admin_token.as_deref().is_some_and(|admin| same(admin.as_bytes(), token.as_bytes()));
+    admin.then_some((Principal::Admin, from_query.then_some(token)))
 }
 
 pub async fn handle(platform: Arc<Platform>, req: Request<Incoming>, path: &str) -> Response<HyperOutgoingBody> {
     let Some((who, remember)) = authenticate(&platform, &req) else {
-        return error(StatusCode::UNAUTHORIZED, "a valid admin or tenant token is required");
+        return error(StatusCode::UNAUTHORIZED, "a valid admin token is required");
     };
     let mut resp = route(platform, req, path, who).await;
     if let Some(cookie) = remember.and_then(|t| HeaderValue::from_str(&format!("{COOKIE}={t}; Path=/_platform/; HttpOnly; SameSite=Strict; Max-Age=2592000")).ok()) {
@@ -137,18 +108,19 @@ async fn route(platform: Arc<Platform>, req: Request<Incoming>, path: &str, who:
     match (&method, segments.as_slice()) {
         (&Method::GET, [""] | ["dashboard"]) => respond(StatusCode::OK, "text/html; charset=utf-8", include_str!("dashboard.html")),
         (&Method::GET, ["requests"]) => respond(StatusCode::OK, "text/html; charset=utf-8", include_str!("requests.html")),
-        (&Method::GET, ["billing"]) => {
-            let current = platform.current();
-            let tenant_of = |name: &str| current.deployment.tenant_of(name).map(str::to_string);
-            let include = |name: &str| who.sees(&platform, name);
-            json(StatusCode::OK, platform.billing.to_json(&platform.accounts.names(), &current.credits, &tenant_of, &include))
+        (&Method::GET, ["usage"]) => {
+            let range = query.split('&').find_map(|kv| kv.strip_prefix("range=")).unwrap_or("24h").to_string();
+            match crate::usage::json(&platform, &range) {
+                Some(body) => json(StatusCode::OK, body),
+                None => error(StatusCode::BAD_REQUEST, "range must be 1h, 6h, 24h, 7d or 30d"),
+            }
         }
         (&Method::GET, ["stats"]) => {
             let names = platform.accounts.names();
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
-            json(StatusCode::OK, platform.stats.to_json(&names, &|name| who.sees(&platform, name)))
+            json(StatusCode::OK, platform.stats.to_json(&names, &|_| true))
         }
-        (&Method::GET, ["jobs"]) => json(StatusCode::OK, jobs_json(&platform, &who).await),
+        (&Method::GET, ["jobs"]) => json(StatusCode::OK, jobs_json(&platform).await),
         (&Method::GET, ["metrics"]) => {
             let arg = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(&format!("{k}="))).map(|v| v.to_string());
             let (app, project) = match (arg("app"), arg("project")) {
@@ -157,9 +129,6 @@ async fn route(platform: Arc<Platform>, req: Request<Incoming>, path: &str, who:
                 _ => return error(StatusCode::BAD_REQUEST, "metrics?app=NAME (or project=NAME)&range=1h|6h|24h|7d|30d"),
             };
             let range = arg("range").unwrap_or_else(|| "24h".into());
-            if !who.sees(&platform, &app) {
-                return error(StatusCode::FORBIDDEN, &format!("not allowed to see {app:?}"));
-            }
             match crate::metrics::METRICS.get().and_then(|m| m.query(&app, project, &range)) {
                 Some(body) => json(StatusCode::OK, body),
                 None => error(StatusCode::BAD_REQUEST, "range must be 1h, 6h, 24h, 7d or 30d"),
@@ -185,14 +154,13 @@ async fn route(platform: Arc<Platform>, req: Request<Incoming>, path: &str, who:
         (&Method::GET, ["whoami"]) => {
             let role = match &who {
                 Principal::Admin => serde_json::json!({ "role": "admin" }),
-                Principal::Tenant(t) => serde_json::json!({ "role": "tenant", "tenant": t }),
                 Principal::Anonymous => serde_json::json!({ "role": "anonymous" }),
             };
             json(StatusCode::OK, role.to_string())
         }
         (&Method::POST, ["reload"]) if who == Principal::Admin => reload(platform, Vec::new()).await,
         (&Method::POST, ["reload"]) => admin_only(),
-        (_, ["apps", app, ..]) if !who.owns(&platform, app) => {
+        (_, ["apps", app, ..]) if who != Principal::Admin => {
             error(StatusCode::FORBIDDEN, &format!("not allowed to manage {app:?}"))
         }
         (&Method::PUT, ["apps", app]) => deploy(platform, req, app.to_string()).await,
@@ -230,7 +198,7 @@ async fn route(platform: Arc<Platform>, req: Request<Incoming>, path: &str, who:
     }
 }
 
-async fn jobs_json(platform: &Platform, who: &Principal) -> String {
+async fn jobs_json(platform: &Platform) -> String {
     let Some(store) = &platform.jobs else {
         return "{\"jobs\":[]}\n".to_string();
     };
@@ -238,7 +206,6 @@ async fn jobs_json(platform: &Platform, who: &Principal) -> String {
         .counts()
         .await
         .iter()
-        .filter(|c| who.sees(platform, &c.app))
         .map(|c| format!("{{\"kind\":{:?},\"name\":{:?},\"app\":{:?},\"pending\":{},\"dead\":{}}}", c.kind, c.name, c.app, c.pending, c.dead))
         .collect();
     format!("{{\"jobs\":[{}]}}\n", rows.join(","))

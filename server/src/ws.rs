@@ -131,7 +131,7 @@ impl Hub {
         }
     }
 
-    /// Open connections per app, for billing.
+    /// Open connections per app, for the usage page.
     pub fn open_by_app(&self) -> HashMap<usize, u64> {
         let mut out = HashMap::new();
         for conn in self.conns.lock().unwrap().values() {
@@ -372,10 +372,6 @@ async fn run(
         counters.request();
         counters.add(Counter::WsEvents, 1);
         counters.add(Counter::WsMessagesIn, 1);
-        if platform.billing.is_blocked(app.id) {
-            let _ = platform.hub.get(app.id, &id).map(|c| c.tx.try_send(Outgoing::Close(1008, "out of credits".into())));
-            continue;
-        }
         let env = Env::new(platform.clone(), worker, pools.clone());
         if let Err(e) = platform::ws_message(env, &app, id.clone(), msg).await {
             counters.error();

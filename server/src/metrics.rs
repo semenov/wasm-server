@@ -1,8 +1,9 @@
 //! Each app's history, a row a minute: requests, errors, request times (as
-//! buckets, for percentiles) and where the time went: CPU, database,
-//! outgoing HTTP. In `<data-dir>/metrics.db`, kept 30 days; read with
-//! `GET /_platform/metrics?app=NAME&range=1h|6h|24h|7d|30d`, which the
-//! dashboard draws and `plumb stats` prints.
+//! buckets, for percentiles), where the time went (CPU, database, outgoing
+//! HTTP), and what else it used (static files, traffic, cache, queues,
+//! WebSockets). In `<data-dir>/metrics.db`, kept 30 days; read with
+//! `GET /_platform/metrics?app=NAME&range=1h|6h|24h|7d|30d` (charts,
+//! `plumb stats`) and `GET /_platform/usage` (each project's totals).
 
 use crate::platform::Platform;
 use crate::stats::{Counter, LATENCY_BOUNDS_US, LATENCY_BUCKETS};
@@ -16,7 +17,7 @@ use wasmtime::Result;
 const KEEP_DAYS: i64 = 30;
 
 /// The columns, in order: counters summed per minute.
-const COLUMNS: [(&str, Counter); 13] = [
+const COLUMNS: [(&str, Counter); 21] = [
     ("requests", Counter::HttpRequests),
     ("events", Counter::Events),
     ("calls", Counter::Calls),
@@ -30,6 +31,14 @@ const COLUMNS: [(&str, Counter); 13] = [
     ("db_wait_ns", Counter::DbWaitNs),
     ("outbound_requests", Counter::OutboundRequests),
     ("outbound_wait_ns", Counter::OutboundWaitNs),
+    ("ws_events", Counter::WsEvents),
+    ("static_requests", Counter::StaticRequests),
+    ("cache_ops", Counter::CacheOps),
+    ("queue_messages", Counter::QueueMessages),
+    ("ws_messages_in", Counter::WsMessagesIn),
+    ("ws_messages_out", Counter::WsMessagesOut),
+    ("outbound_bytes_sent", Counter::OutboundBytesSent),
+    ("outbound_bytes_received", Counter::OutboundBytesReceived),
 ];
 
 pub struct Metrics {
@@ -47,6 +56,13 @@ impl Metrics {
         conn.execute_batch(&format!(
             "CREATE TABLE IF NOT EXISTS minutes (app TEXT NOT NULL, minute INTEGER NOT NULL, {cols}egress_bytes INTEGER NOT NULL DEFAULT 0, latency TEXT NOT NULL DEFAULT '[]', PRIMARY KEY (app, minute)) WITHOUT ROWID;"
         ))?;
+        // columns added since the file was made
+        let have: Vec<String> = conn.prepare("SELECT name FROM pragma_table_info('minutes')")?.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        for (c, _) in COLUMNS {
+            if !have.iter().any(|h| h == c) {
+                conn.execute_batch(&format!("ALTER TABLE minutes ADD COLUMN {c} INTEGER NOT NULL DEFAULT 0"))?;
+            }
+        }
         Ok(Self { conn: Mutex::new(conn) })
     }
 }
@@ -77,8 +93,8 @@ pub fn spawn(platform: Arc<Platform>, metrics: Arc<Metrics>) -> Result<()> {
                 let before = std::mem::replace(&mut previous[id], (totals, latency));
                 let d = |c: Counter| totals[c as usize].wrapping_sub(before.0[c as usize]) as i64;
                 let lat: Vec<u64> = latency.iter().zip(before.1.iter()).map(|(a, b)| a.wrapping_sub(*b)).collect();
-                if COLUMNS[..5].iter().all(|(_, c)| d(*c) == 0) {
-                    continue; // nothing ran
+                if COLUMNS.iter().all(|(_, c)| d(*c) == 0) && d(Counter::EgressBytes) == 0 {
+                    continue; // nothing happened
                 }
                 let values: Vec<i64> = COLUMNS.iter().map(|(_, c)| d(*c)).collect();
                 let cols: String = COLUMNS.iter().map(|(c, _)| format!(", {c}")).collect();
@@ -236,6 +252,28 @@ impl Metrics {
         }
         out.push_str("]}\n");
         Some(out)
+    }
+}
+
+impl Metrics {
+    /// Each app's totals over `range` (`24h`...): column → sum, and egress.
+    pub fn totals(&self, range: &str) -> Option<Vec<(String, Vec<(&'static str, i64)>)>> {
+        let (span, _) = range_steps(range)?;
+        let from = unix_now() - span;
+        let conn = self.conn.lock().unwrap();
+        let sums: String = COLUMNS.iter().map(|(c, _)| format!("sum({c}), ")).collect();
+        let mut stmt = conn.prepare(&format!("SELECT app, {sums}sum(egress_bytes) FROM minutes WHERE minute >= ? GROUP BY app")).ok()?;
+        let rows = stmt
+            .query_map(params![from], |r| {
+                let mut v: Vec<(&'static str, i64)> = Vec::new();
+                for (i, (c, _)) in COLUMNS.iter().enumerate() {
+                    v.push((c, r.get(1 + i)?));
+                }
+                v.push(("egress_bytes", r.get(1 + COLUMNS.len())?));
+                Ok((r.get::<_, String>(0)?, v))
+            })
+            .ok()?;
+        Some(rows.flatten().collect())
     }
 }
 

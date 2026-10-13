@@ -5,7 +5,8 @@ instance (about 6 µs to create on Linux). Functions are triggered by HTTP, by
 WebSocket messages, by queue messages and cron, or by typed calls from other
 functions. The host provides what instances can't keep themselves: databases
 (SQLite or Postgres), a cache, durable queues, WebSocket connections and
-static sites. Everything an app uses is metered and billed in credits.
+static sites. What every project uses is measured, so the owner sees which
+one needs attention.
 
 ## Layout
 
@@ -22,7 +23,7 @@ static sites. Everything an app uses is metered and billed in credits.
   - `cache.rs`: `platform:sdk/cache`
   - `jobs.rs`: `platform:sdk/queue`, cron, and event delivery
   - `ws.rs`: `platform:sdk/websocket`, connections held by the host
-  - `billing.rs`, `dashboard.html`: metering, credits, `/_platform/` dashboard
+  - `metrics.rs`, `usage.rs`, `dashboard.html`: per-minute history, what each project uses, the `/_platform/` page
   - `stats.rs`: per-worker, per-app counters; `bench.rs`: in-process microbenchmark
 - `wit/`: the `platform:sdk` package that apps import (`sql`, `cache`, `queue`, `events`)
 - `guests/`: sample apps in Rust for `wasm32-wasip2`
@@ -70,7 +71,6 @@ static = "../sites/shortener"
 domains = ["short.localhost"]
 databases = ["links"]
 env = { GREETING = "hi" }
-credits = 1000
 
 [apps.stats]
 component = "../apps/stats.cwasm"
@@ -93,8 +93,7 @@ wasm-server reload http://host:8080                            # re-read the con
 - **Open WebSocket connections stay open,** and their next message is
   handled by the new version.
 - **Queue deliveries, cron and typed calls** always use the current version.
-- **What persists across deploys:** app caches, account ids and billing
-  history.
+- **What persists across deploys:** app caches, account ids and metrics.
 - **Measured:** two deploys during a 10 s load test, 144,813 requests, every
   one `200`. A reload takes about 2 ms; uploading a `.wasm` adds its compile
   time.
@@ -108,7 +107,7 @@ wasm-server reload http://host:8080                            # re-read the con
   new one as `.previous`.
 - **Restart only for databases:** every worker holds connections to them, so
   database changes need a restart. Everything else (apps, sites, domains,
-  grants, env, queues, cron, credits, links) applies on reload.
+  grants, env, queues, cron, links) applies on reload.
 
 **Versions and rollback.**
 - **History:** before a deploy or rollback replaces a component, the old file
@@ -124,28 +123,10 @@ wasm-server rollback http://host:8080 --app shortener          # previous versio
 wasm-server rollback http://host:8080 --app shortener --to 1791574461446-de04ffd4795e
 ```
 
-**Tenants.** A tenant manages its own apps with its own token. The
-deployment stores only the token's SHA-256:
-
-```toml
-[tenants.acme]
-token_sha256 = "…"          # wasm-server hash-token TOKEN
-
-[apps.shop]
-tenant = "acme"
-component = "apps/shop.cwasm"
-```
-
-| | admin | tenant | nobody (no tokens configured) |
-|---|---|---|---|
-| dashboard, billing, stats, jobs | everything, plus per-tenant totals | its own apps only | everything, read-only |
-| deploy, versions, rollback | any app | its own apps | — |
-| reload, backups | yes | — | — |
-
 **The admin token** (`--admin-token`, or `WASM_SERVER_ADMIN_TOKEN`, at least 16
 characters):
 - **Required for writes:** reload and deploy are disabled without it.
-- **Protects reads too** once set: stats, billing and the dashboard.
+- **Protects reads too** once set: stats, usage, logs and the dashboard.
 - **How to send it:** `Authorization: Bearer TOKEN`. For a browser, open
   `/_platform/?token=TOKEN` once; it sets an HttpOnly cookie.
 - **Without a token,** `/_platform/` is read-only and open, which is fine for
@@ -225,7 +206,7 @@ Projects deployed over the API keep users' files on the server
   app's domain.
 - **Clusters:** a worker's app sends its calls to the primary, which keeps
   the files; `/_files/` requests never leave the primary.
-- **Not yet:** files aren't in backups or storage billing, and there are
+- **Not yet:** files aren't in backups, and there are
   no range requests (video seeking).
 
 ### Outgoing HTTP
@@ -374,38 +355,21 @@ impl Guest for Chat {
 }
 ```
 
-### Billing in credits
+### What each project uses
 
-Everything an app uses is metered, priced in credits and broken down by
-what it was spent on:
+`/_platform/` lists the projects, the busiest first (by CPU time), with
+what each used over the last hour, day, week or month and what it holds
+now (`server/src/usage.rs`; JSON at `GET /_platform/usage?range=24h`):
 
-| Category | Meters |
-|---|---|
-| Compute | invocations (HTTP, events, calls, WebSocket events), CPU-seconds, GB-seconds of memory |
-| Network | egress GB (responses, static files, WebSocket messages sent), static requests |
-| Database | calls, time in the database, GB-hours of SQLite storage |
-| Cache | operations, GB-hours of memory held |
-| Queues | messages sent |
-| WebSockets | messages in and out, connection-minutes |
+- requests and failures, CPU time, database queries and time, outgoing
+  requests, traffic out, static files served, queue and cron events,
+  WebSocket messages;
+- databases and files on disk, cache in memory, open WebSockets.
 
-- **Prices:** `wasm-server pricing` lists the defaults (1 credit ≈ $0.001,
-  near public cloud prices for the same resource). `--pricing FILE` overrides
-  any of them with a JSON object such as `{"cpu": 0.1}`.
-- **Collection:** counters are kept per worker without contention and turned
-  into credits once a second.
-- **Storage:** usage is written per minute to `<data-dir>/billing.db` every
-  10 s and on SIGTERM/SIGINT, so totals survive restarts.
-- **Where to look:**
-  - `GET /_platform/billing` returns totals per app, by category and by meter,
-    plus credits per minute for the last hour.
-  - `GET /_platform/` is a dashboard of the same, phone-friendly.
-- **Limits:** `--credits APP=N` grants an app (or static site) N credits.
-  When they're used up:
-  - HTTP and static files get `402`;
-  - WebSocket upgrades are refused, and open connections are closed with code
-    1008;
-  - queue messages and cron ticks wait (without using up an attempt).
-- **Without a grant**, an app is only metered.
+The counters are the per-minute metrics (`metrics.rs`, 30 days), so this
+costs nothing extra. There are no prices or quotas: one owner runs the
+server. What protects projects from each other are the per-request limits
+(CPU, memory, time).
 
 ### Sites and routing
 
@@ -422,7 +386,7 @@ what it was spent on:
 - **Without a domain**, a request goes to the app named by the first path
   segment (`/NAME/...`).
 - **Reserved paths:** `/_platform/*` belongs to the server (`stats`, `jobs`,
-  `billing`, `reload`, `apps/NAME`, and the dashboard at `/_platform/`) and
+  `usage`, `metrics`, `reload`, `apps/NAME`, and the dashboard at `/_platform/`) and
   can't reach apps. See the admin token above.
 
 ## Showcase: link shortener
@@ -526,7 +490,7 @@ WASM_SERVER_CLUSTER_TOKEN=... wasm-server serve --join http://10.0.0.2:7070 \
 ```
 
 - **The primary keeps the state:** HTTPS, databases, queues and cron,
-  WebSockets, static files, logs, metrics and billing. Workers take its
+  WebSockets, static files, logs and metrics. Workers take its
   apps (settings, secrets, components it compiled) and check for changes
   every 2 seconds; a deploy reaches them by itself.
 - **Requests** go to the node with the fewest requests in flight per core,
@@ -537,7 +501,7 @@ WASM_SERVER_CLUSTER_TOKEN=... wasm-server serve --join http://10.0.0.2:7070 \
   kept connections; its transactions are held there by id (rolled back
   after 30 s idle). Cursors aren't available on workers yet.
 - **Logs and counters** come back with the heartbeat, so `/_platform/`
-  (logs, metrics, charts, billing) covers the whole cluster;
+  (logs, metrics, charts, usage) covers the whole cluster;
   `GET /_platform/cluster` lists the nodes.
 - **Same binary everywhere:** workers run the primary's compiled
   components, so they run the same wasm-server version on the same CPU
@@ -613,7 +577,7 @@ docker compose run --rm bench --suite ...        # the same on Linux
 ```
 
 - **Results:** [BENCHMARKS.md](BENCHMARKS.md).
-- **Hosting across many servers** (routing, databases, billing):
+- **Hosting across many servers** (routing, databases, metering):
   [docs/hosting.md](docs/hosting.md).
 - **macOS caveat:** Wasmtime's fast slot reuse is Linux-only. Processes under
   a background QoS clamp (`ps -o pri` shows 4) run on efficiency cores and give
@@ -667,7 +631,6 @@ docker compose run --rm bench --suite ...        # the same on Linux
 ## Next steps
 
 - Continuous WAL shipping for point-in-time recovery; read replicas across servers.
-- Per-tenant credit pools and quotas (today credits are per app).
 - SQLite replication (read replicas, continuous backup to object storage).
 - Queues across servers (NATS JetStream), as described in `docs/hosting.md`.
 - Outgoing HTTP: HTTP/2 to hosts that offer it, and a private-address

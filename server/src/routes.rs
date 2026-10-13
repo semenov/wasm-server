@@ -11,7 +11,7 @@ use wasmtime::{Result, bail};
 /// A deployed site: a wasm app, static files, or both. With both, existing
 /// files are served directly and everything else goes to the app.
 pub struct Site {
-    /// Account for usage and billing; for an app site, the app's id.
+    /// Account for usage counters; for an app site, the app's id.
     pub id: usize,
     pub name: String,
     pub app: Option<Arc<App>>,

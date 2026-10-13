@@ -59,8 +59,6 @@ enum Cmd {
     Done { id: i64 },
     Retry { id: i64, run_at: i64, error: String },
     Dead { id: i64, error: String },
-    /// Back to pending without counting the attempt.
-    Postpone { id: i64, run_at: i64 },
     NextDue { reply: oneshot::Sender<Option<i64>> },
     Counts { reply: oneshot::Sender<Vec<JobCount>> },
 }
@@ -212,10 +210,6 @@ fn store_loop(conn: Connection, mut rx: mpsc::UnboundedReceiver<Cmd>) {
                         conn.prepare_cached("UPDATE jobs SET run_at = ?2, locked_until = NULL, last_error = ?3 WHERE id = ?1")?
                             .execute(params![id, run_at, error])?;
                     }
-                    Cmd::Postpone { id, run_at } => {
-                        conn.prepare_cached("UPDATE jobs SET run_at = ?2, locked_until = NULL, attempts = attempts - 1 WHERE id = ?1")?
-                            .execute(params![id, run_at])?;
-                    }
                     Cmd::Dead { id, error } => {
                         conn.prepare_cached("UPDATE jobs SET dead = 1, locked_until = NULL, last_error = ?2 WHERE id = ?1")?
                             .execute(params![id, error])?;
@@ -361,11 +355,6 @@ async fn deliver(platform: Arc<Platform>, worker: usize, pools: Arc<Pools>, job:
         let _ = store.tx.send(Cmd::Dead { id: job.id, error: format!("no app named {:?}", job.app) });
         return;
     };
-    if platform.billing.is_blocked(app.id) {
-        // Out of credits: try again later, without using up an attempt.
-        let _ = store.tx.send(Cmd::Postpone { id: job.id, run_at: now_ms() + 60_000 });
-        return;
-    }
     let counters = platform.stats.counters(worker, app.id);
     counters.request();
     counters.add(crate::stats::Counter::Events, 1);

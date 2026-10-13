@@ -33,7 +33,6 @@ pub fn run(engine: wasmtime::Engine, app: App, mode: Mode, threads: usize, durat
         routes: Routes::new(vec![app], Vec::new(), &[], &accounts)?,
         queues: Default::default(),
         crons: Vec::new(),
-        credits: Default::default(),
         deployment: Deployment::default(),
         version: 1,
     };
@@ -50,7 +49,6 @@ pub fn run(engine: wasmtime::Engine, app: App, mode: Mode, threads: usize, durat
         db_pool_size: 1,
         db_tls: db::tls(None)?,
         jobs: None,
-        billing: crate::billing::Billing::disabled(),
         admin_token: None,
         data_dir: std::env::temp_dir(),
         backups: None,

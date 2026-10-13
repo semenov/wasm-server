@@ -135,7 +135,7 @@ pub fn add_to(deployment: &mut Deployment, data_dir: &Path) -> Result<()> {
             let Some(component) = code.get(app) else {
                 // files only
                 let Some(static_dir) = static_dir else { continue };
-                let site = crate::deployment::SiteSpec { static_dir, domains: settings.domains.clone(), path: s.path.clone(), spa: s.spa, credits: None, tenant: None };
+                let site = crate::deployment::SiteSpec { static_dir, domains: settings.domains.clone(), path: s.path.clone(), spa: s.spa };
                 deployment.sites.insert(name, site);
                 continue;
             };

@@ -22,12 +22,6 @@
 //! [sites.docs]
 //! static = "sites/docs"
 //! domains = ["docs.localhost"]
-//!
-//! # A tenant manages its own apps with its own token (stored hashed:
-//! # `wasm-server hash-token TOKEN`), and sees only their usage.
-//! [tenants.acme]
-//! token_sha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
-//! # then: tenant = "acme" in [apps.*] or [sites.*]
 //! ```
 //!
 //! Relative paths in a file are relative to the file.
@@ -47,15 +41,6 @@ pub struct Deployment {
     /// Static-only sites.
     #[serde(default)]
     pub sites: BTreeMap<String, SiteSpec>,
-    #[serde(default)]
-    pub tenants: BTreeMap<String, TenantSpec>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct TenantSpec {
-    /// SHA-256 of the tenant's token, hex.
-    pub token_sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -97,13 +82,10 @@ pub struct AppSpec {
     /// Which app provides an imported interface: interface → app.
     #[serde(default)]
     pub links: BTreeMap<String, String>,
-    pub credits: Option<f64>,
     pub db_timeout_ms: Option<u64>,
     /// Hosts the app may send HTTP requests to (`api.example.com`,
     /// `*.example.com`); not set: any public host; empty: none.
     pub outbound: Option<Vec<String>>,
-    /// The tenant that owns the app (deploys it, sees its usage).
-    pub tenant: Option<String>,
     /// For apps deployed over the API: the app's own database names →
     /// the server's (`main` → `notes/main`).
     #[serde(skip)]
@@ -125,8 +107,6 @@ pub struct SiteSpec {
     /// A single-page app: paths that aren't files get `index.html`.
     #[serde(default)]
     pub spa: bool,
-    pub credits: Option<f64>,
-    pub tenant: Option<String>,
 }
 
 /// Where the deployment comes from; read again on every reload.
@@ -169,11 +149,6 @@ impl Source {
 }
 
 impl Deployment {
-    /// The tenant owning an app or site, if any.
-    pub fn tenant_of(&self, name: &str) -> Option<&str> {
-        self.apps.get(name).and_then(|a| a.tenant.as_deref()).or_else(|| self.sites.get(name).and_then(|s| s.tenant.as_deref()))
-    }
-
     fn resolve_paths(&mut self, base: &Path) {
         let fix = |p: &mut PathBuf| {
             if p.is_relative() {
@@ -227,23 +202,6 @@ impl Deployment {
                 if let Some(other) = queues.insert(queue.clone(), name.clone()) {
                     bail!("queue {queue:?} is consumed by both {other:?} and {name:?}");
                 }
-            }
-        }
-        for (name, tenant) in self
-            .apps
-            .iter()
-            .map(|(n, a)| (n, &a.tenant))
-            .chain(self.sites.iter().map(|(n, s)| (n, &s.tenant)))
-        {
-            if let Some(t) = tenant {
-                if !self.tenants.contains_key(t) {
-                    bail!("{name:?} belongs to tenant {t:?}, which isn't defined");
-                }
-            }
-        }
-        for (name, t) in &self.tenants {
-            if t.token_sha256.len() != 64 || !t.token_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
-                bail!("tenant {name:?}: token_sha256 must be 64 hex characters (wasm-server hash-token TOKEN)");
             }
         }
         for (name, path) in self.apps.iter().map(|(n, a)| (n, &a.path)).chain(self.sites.iter().map(|(n, s)| (n, &s.path))) {

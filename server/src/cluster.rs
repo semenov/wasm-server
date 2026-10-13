@@ -2,7 +2,7 @@
 //!
 //! The primary (`--cluster-listen ADDR --cluster-token T`) keeps everything
 //! with state: HTTPS, databases, queues and cron, WebSockets, logs, metrics
-//! and billing. A worker (`serve --join http://PRIMARY --cluster-token T`)
+//! and metrics. A worker (`serve --join http://PRIMARY --cluster-token T`)
 //! runs app code only:
 //!
 //! - **Apps:** it takes them from the primary (settings, secrets, components)
@@ -15,7 +15,7 @@
 //!   primary over the cluster port (transactions are held there by id); its
 //!   cache is its own.
 //! - **Logs and counters** go back to the primary with the heartbeat, so
-//!   `/_platform/` (logs, metrics, billing) sees the whole cluster.
+//!   `/_platform/` (logs, metrics, usage) sees the whole cluster.
 //!
 //! The autoscaler (`autoscale.rs`) adds and removes workers on the primary.
 

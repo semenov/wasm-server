@@ -17,7 +17,6 @@ pub struct Flags {
     pub crons: Vec<(String, String, String)>,
     pub links: Vec<(String, String, String)>,
     pub websockets: Vec<(String, String)>,
-    pub credits: Vec<(String, String)>,
     pub envs: Vec<(String, String, String)>,
     pub outbound: Vec<(String, String)>,
 }
@@ -71,7 +70,7 @@ pub fn deployment(f: Flags) -> Result<Deployment> {
     for (name, dir) in f.statics {
         match d.apps.get_mut(&name) {
             Some(a) => a.static_dir = Some(PathBuf::from(dir)),
-            None => drop(d.sites.insert(name, SiteSpec { static_dir: PathBuf::from(dir), domains: Vec::new(), path: None, spa: false, credits: None, tenant: None })),
+            None => drop(d.sites.insert(name, SiteSpec { static_dir: PathBuf::from(dir), domains: Vec::new(), path: None, spa: false })),
         }
     }
     for (host, name) in f.domains {
@@ -81,16 +80,6 @@ pub fn deployment(f: Flags) -> Result<Deployment> {
             s.domains.push(host);
         } else {
             bail!("--domain {host}={name}: no app or static site named {name:?}");
-        }
-    }
-    for (name, n) in f.credits {
-        let n: f64 = n.parse().map_err(|_| format_err!("--credits {name}={n}: not a number"))?;
-        if let Some(a) = d.apps.get_mut(&name) {
-            a.credits = Some(n);
-        } else if let Some(s) = d.sites.get_mut(&name) {
-            s.credits = Some(n);
-        } else {
-            bail!("--credits {name}=...: no app or site named {name:?}");
         }
     }
     Ok(d)

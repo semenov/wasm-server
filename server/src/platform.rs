@@ -7,7 +7,6 @@
 //! - a typed call from another function (`call`).
 
 use crate::app::{App, RequestLimits, RequestState};
-use crate::billing::Billing;
 use crate::bindings::events::{Event, Kind};
 use crate::bindings::websocket::Message;
 use crate::bindings::websocket_handler::ConnectInfo;
@@ -50,7 +49,6 @@ pub struct Platform {
     pub jobs: Option<JobStore>,
     /// Open WebSocket connections and channels.
     pub hub: Hub,
-    pub billing: Billing,
     /// Required for `/_platform/` writes (reload, deploy) and, when set,
     /// for reads too.
     pub admin_token: Option<String>,
@@ -86,7 +84,6 @@ pub struct Parts {
     pub db_pool_size: usize,
     pub db_tls: DbTls,
     pub jobs: Option<JobStore>,
-    pub billing: Billing,
     pub admin_token: Option<String>,
     pub data_dir: std::path::PathBuf,
     pub backups: Option<crate::backup::BackupConfig>,
@@ -106,7 +103,6 @@ impl Platform {
             db_tls: p.db_tls,
             jobs: p.jobs,
             hub: Hub::default(),
-            billing: p.billing,
             admin_token: p.admin_token,
             data_dir: p.data_dir,
             backups: p.backups,

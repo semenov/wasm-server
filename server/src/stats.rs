@@ -1,7 +1,7 @@
 //! Usage counters per account (an app or a static site), kept per worker so
 //! the hot path never touches a cache line another core writes. Only the
 //! owning worker thread writes its counters (plain load + store, no atomic
-//! read-modify-write); readers (`/_platform/stats`, billing) sum them across
+//! read-modify-write); readers (`/_platform/stats`, metrics) sum them across
 //! workers.
 
 use std::fmt::Write as _;

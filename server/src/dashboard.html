@@ -3,124 +3,101 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Platform usage</title>
+  <title>Projects</title>
   <style>
     :root {
       --bg: #ffffff; --panel: #f6f7f9; --text: #1f2328; --muted: #6b7280; --line: #e5e7eb;
-      --c-compute: #4f46e5; --c-network: #0891b2; --c-database: #d97706; --c-cache: #16a34a; --c-queues: #db2777; --c-websockets: #7c3aed;
-      --bar-bg: #e9ebef; --danger: #c0392b;
+      --accent: #4f46e5; --bar-bg: #e9ebef; --danger: #c0392b;
     }
     @media (prefers-color-scheme: dark) {
       :root {
         --bg: #14161a; --panel: #1c1f24; --text: #e8eaed; --muted: #9aa0a6; --line: #2c2f33;
-        --c-compute: #8b85ff; --c-network: #38bdf8; --c-database: #fbbf24; --c-cache: #4ade80; --c-queues: #f472b6; --c-websockets: #c084fc;
-        --bar-bg: #2a2e34; --danger: #ff7b6b;
+        --accent: #8b85ff; --bar-bg: #2a2e34; --danger: #ff7b6b;
       }
     }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
     main { max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; }
     h1 { font-size: 1.5rem; margin: 0; }
-    .sub { color: var(--muted); margin: 4px 0 20px; font-size: .9rem; }
-    .total { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 20px; }
-    .total div { background: var(--panel); border-radius: 10px; padding: 12px 16px; min-width: 140px; }
-    .total b { display: block; font-size: 1.4rem; font-variant-numeric: tabular-nums; }
-    .total span { color: var(--muted); font-size: .8rem; }
-    .card { background: var(--panel); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    a { color: inherit; }
+    .sub { color: var(--muted); margin: 4px 0 16px; font-size: .9rem; }
+    .ranges { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+    .ranges button { font: inherit; font-size: .85rem; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
+    .ranges button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+    .card { background: var(--panel); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
     .head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
     .head h2 { font-size: 1.1rem; margin: 0; }
-    .spent { font-variant-numeric: tabular-nums; font-weight: 600; }
-    .blocked { color: var(--danger); font-weight: 600; }
-    .bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--bar-bg); margin: 12px 0 8px; }
-    .bar i { display: block; height: 100%; }
-    .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: .82rem; color: var(--muted); }
-    .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; background: var(--dot); vertical-align: -1px; }
-    .grant { font-size: .82rem; color: var(--muted); margin-top: 8px; }
-    .grant .bar { height: 6px; margin: 6px 0 0; }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: .85rem; }
-    th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); }
-    th { color: var(--muted); font-weight: 500; }
-    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-    .table-wrap { overflow-x: auto; }
-    svg.spark { width: 100%; height: 48px; display: block; margin-top: 10px; }
-    .muted { color: var(--muted); font-size: .82rem; }
-    details { margin-top: 24px; }
-    summary { cursor: pointer; color: var(--muted); }
+    .apps { color: var(--muted); font-size: .82rem; }
+    .share { height: 6px; border-radius: 3px; background: var(--bar-bg); margin: 10px 0 12px; overflow: hidden; }
+    .share i { display: block; height: 100%; background: var(--accent); }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px 16px; }
+    .tiles div b { display: block; font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+    .tiles div span { color: var(--muted); font-size: .78rem; }
+    .bad { color: var(--danger); }
+    .muted { color: var(--muted); font-size: .85rem; }
   </style>
 </head>
 <body>
   <main>
-    <h1>Platform usage</h1>
-    <p class="sub">Credits spent per app, and on what. Updates every 2 seconds. 1 credit ≈ $0.001 at the default prices. <a href="/_platform/requests" style="color:inherit">Requests and response times</a></p>
-    <div class="total" id="total"></div>
-    <div id="accounts"><p class="muted">Loading…</p></div>
-    <details>
-      <summary>Price list</summary>
-      <div class="table-wrap"><table id="pricing"></table></div>
-    </details>
+    <h1>Projects</h1>
+    <p class="sub">What each project uses, the busiest first. The bar is its share of the server's CPU time. Updates every 5 seconds. <a href="/_platform/requests">Requests and response times</a></p>
+    <div class="ranges" id="ranges"></div>
+    <div id="projects"><p class="muted">Loading…</p></div>
   </main>
   <script>
-    const COLORS = { Compute: "--c-compute", Network: "--c-network", Database: "--c-database", Cache: "--c-cache", Queues: "--c-queues", WebSockets: "--c-websockets" };
+    const RANGES = ["1h", "24h", "7d", "30d"];
+    let range = "24h";
     const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-    const credits = (n) => n >= 100 ? n.toFixed(0) : n >= 1 ? n.toFixed(2) : n >= 0.01 ? n.toFixed(3) : n > 0 ? n.toPrecision(2) : "0";
-    const qty = (n) => n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : n >= 1e4 ? (n / 1e3).toFixed(1) + "k" : n >= 100 ? n.toFixed(0) : n >= 1 ? n.toFixed(2) : n.toPrecision(2);
+    const num = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e4 ? (n / 1e3).toFixed(1) + "k" : String(Math.round(n));
+    const bytes = (n) => n >= 1e9 ? (n / 1e9).toFixed(2) + " GB" : n >= 1e6 ? (n / 1e6).toFixed(1) + " MB" : n >= 1e3 ? (n / 1e3).toFixed(0) + " KB" : n + " B";
+    const secs = (s) => s >= 3600 ? (s / 3600).toFixed(1) + " h" : s >= 60 ? (s / 60).toFixed(1) + " min" : s >= 1 ? s.toFixed(1) + " s" : (s * 1000).toFixed(0) + " ms";
 
-    function spark(series) {
-      if (!series.length) return "";
-      const now = Math.floor(Date.now() / 60000) * 60;
-      const points = [];
-      for (let m = now - 59 * 60; m <= now; m += 60) {
-        const hit = series.find(([t]) => t === m);
-        points.push(hit ? hit[1] : 0);
-      }
-      const max = Math.max(...points, 1e-9);
-      const w = 100 / points.length;
-      const bars = points.map((v, i) => {
-        const h = (v / max) * 44;
-        return `<rect x="${(i * w).toFixed(2)}" y="${(46 - h).toFixed(2)}" width="${(w * 0.8).toFixed(2)}" height="${h.toFixed(2)}" rx="0.6"><title>${credits(v)} credits</title></rect>`;
-      }).join("");
-      return `<svg class="spark" viewBox="0 0 100 48" preserveAspectRatio="none" style="fill: var(--c-compute)">${bars}</svg>
-        <div class="muted">Credits per minute, last hour</div>`;
+    function renderRanges() {
+      document.getElementById("ranges").innerHTML = RANGES.map((r) => `<button aria-pressed="${r === range}" data-r="${r}">${r}</button>`).join("");
+      for (const b of document.querySelectorAll("#ranges button")) b.onclick = () => { range = b.dataset.r; renderRanges(); load(); };
+    }
+
+    function tile(value, label, cls = "") {
+      return `<div><b class="${cls}">${value}</b><span>${label}</span></div>`;
     }
 
     function render(data) {
-      const accounts = data.accounts.filter((a) => a.spent > 0 || a.granted !== null);
-      const total = data.accounts.reduce((s, a) => s + a.spent, 0);
-      document.getElementById("total").innerHTML =
-        `<div><b>${credits(total)}</b><span>credits spent, all apps</span></div>
-         <div><b>${accounts.length}</b><span>apps with usage</span></div>` +
-        (data.tenants || []).map((t) => `<div><b>${credits(t.spent)}</b><span>tenant ${esc(t.name)}</span></div>`).join("");
-      document.getElementById("accounts").innerHTML = accounts.length ? accounts
-        .sort((a, b) => b.spent - a.spent)
-        .map((a) => {
-          const cats = a.categories.filter((c) => c.credits > 0);
-          const bar = cats.map((c) => `<i style="width:${(c.credits / a.spent) * 100}%; background: var(${COLORS[c.category]})" title="${c.category}"></i>`).join("");
-          const legend = cats.map((c) => `<span style="--dot: var(${COLORS[c.category]})">${c.category} ${credits(c.credits)} (${((c.credits / a.spent) * 100).toFixed(0)}%)</span>`).join("");
-          const grant = a.granted === null ? "" : `<div class="grant">${a.blocked ? `<span class="blocked">Out of credits</span>` : `${credits(a.remaining)} of ${credits(a.granted)} credits left`}
-              <div class="bar"><i style="width:${Math.min(100, (a.spent / a.granted) * 100)}%; background: var(${a.blocked ? "--danger" : "--c-compute"})"></i></div></div>`;
-          const rows = a.meters.sort((x, y) => y.credits - x.credits).map((m) =>
-            `<tr><td>${esc(m.meter.replaceAll("_", " "))}</td><td>${esc(m.category)}</td><td class="num">${qty(m.quantity)} ${esc(m.unit)}${m.quantity === 1 || m.unit === "GB" ? "" : "s"}</td><td class="num">${credits(m.credits)}</td></tr>`).join("");
-          return `<section class="card">
-            <div class="head"><h2>${esc(a.name)}${a.tenant ? ` <span class="muted">· ${esc(a.tenant)}</span>` : ""}</h2><span class="spent">${credits(a.spent)} credits</span></div>
-            <div class="bar">${bar}</div><div class="legend">${legend}</div>
-            ${grant}
-            <div class="table-wrap"><table><thead><tr><th>Meter</th><th>Category</th><th class="num">Used</th><th class="num">Credits</th></tr></thead><tbody>${rows}</tbody></table></div>
-            ${spark(a.last_hour)}
-          </section>`;
-        }).join("") : `<p class="muted">No usage yet.</p>`;
-      document.getElementById("pricing").innerHTML = `<thead><tr><th>Meter</th><th>Category</th><th class="num">Credits</th><th>Per</th></tr></thead><tbody>` +
-        data.pricing.map((p) => `<tr><td title="${esc(p.description)}">${esc(p.meter.replaceAll("_", " "))}</td><td>${esc(p.category)}</td><td class="num">${p.price}</td><td>${esc(p.unit)}</td></tr>`).join("") + `</tbody>`;
+      const total = data.projects.reduce((s, p) => s + p.cpu_seconds, 0);
+      document.getElementById("projects").innerHTML = data.projects.length ? data.projects.map((p) => {
+        const share = total > 0 ? (p.cpu_seconds / total) * 100 : 0;
+        const app = p.apps[0] || p.name;
+        const tiles = [
+          tile(num(p.requests), "requests"),
+          tile(num(p.errors), "failed (5xx, timeouts)", p.errors > 0 ? "bad" : ""),
+          tile(secs(p.cpu_seconds), "CPU time"),
+          tile(secs(p.db_seconds), `database, ${num(p.db_queries)} queries`),
+          tile(num(p.outbound_requests), "outgoing requests"),
+          tile(bytes(p.egress_bytes), "traffic out"),
+          tile(bytes(p.database_bytes), "databases on disk"),
+          tile(bytes(p.file_bytes), "files on disk"),
+        ];
+        if (p.static_requests) tiles.push(tile(num(p.static_requests), "static files served"));
+        if (p.events) tiles.push(tile(num(p.events), "queue and cron events"));
+        if (p.cache_bytes) tiles.push(tile(bytes(p.cache_bytes), "in cache"));
+        if (p.websockets || p.ws_messages) tiles.push(tile(`${num(p.websockets)} open`, `WebSockets, ${num(p.ws_messages)} messages`));
+        return `<section class="card">
+          <div class="head"><h2>${esc(p.name)}</h2><span class="apps">${p.apps.length > 1 ? esc(p.apps.join(", ")) + " · " : ""}<a href="/_platform/requests?app=${encodeURIComponent(app)}">charts</a></span></div>
+          <div class="share" title="${share.toFixed(0)}% of the CPU time"><i style="width:${share}%"></i></div>
+          <div class="tiles">${tiles.join("")}</div>
+        </section>`;
+      }).join("") : `<p class="muted">No projects yet.</p>`;
     }
 
     async function load() {
       try {
-        render(await (await fetch("/_platform/billing")).json());
+        render(await (await fetch(`/_platform/usage?range=${range}`)).json());
       } catch {
         // Keep showing the last data if a refresh fails.
       }
     }
+    renderRanges();
     load();
-    setInterval(load, 2000);
+    setInterval(load, 5000);
   </script>
 </body>
 </html>

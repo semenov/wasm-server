@@ -1,6 +1,5 @@
 //! Data plane: thread-per-core HTTP serving with one fresh instance per request.
 
-use crate::billing;
 use crate::db::Pools;
 use crate::jobs;
 use crate::platform::{self, Env, Platform};
@@ -32,7 +31,7 @@ pub struct ServeOpts {
     pub job_workers: usize,
     /// HTTPS on `listen` (`--https`): certificates from `tls.rs`.
     pub tls: Option<Arc<rustls::ServerConfig>>,
-    /// A cluster worker: jobs, cron, billing and backups are the primary's.
+    /// A cluster worker: jobs, cron, metrics and backups are the primary's.
     pub worker: bool,
 }
 
@@ -40,7 +39,6 @@ pub fn serve(shared: Arc<Platform>, opts: ServeOpts) -> Result<()> {
     spawn_epoch_ticker(shared.engine().clone());
     spawn_signal_handler(shared.clone());
     if !opts.worker {
-        billing::spawn(shared.clone())?;
         jobs::spawn_workers(shared.clone(), opts.workers, opts.job_workers)?;
         jobs::spawn_cron(shared.clone())?;
     }
@@ -168,9 +166,6 @@ async fn handle(shared: Arc<Platform>, worker: usize, pools: Arc<Pools>, mut req
         }
         None => return text(StatusCode::NOT_FOUND, "no site here\n"),
     };
-    if shared.billing.is_blocked(site.id) {
-        return text(StatusCode::PAYMENT_REQUIRED, "out of credits\n");
-    }
     if let Some(files) = &site.files {
         if let Some(resp) = files.serve(req.method(), site_path, req.headers()) {
             let counters = shared.stats.counters(worker, site.id);
@@ -306,8 +301,7 @@ fn text(status: StatusCode, content: &'static str) -> Response<HyperOutgoingBody
     resp
 }
 
-/// SIGHUP reloads the deployment. SIGINT or SIGTERM let billing store the
-/// usage it hasn't written yet, then exit.
+/// SIGHUP reloads the deployment. SIGINT or SIGTERM exit.
 fn spawn_signal_handler(platform: Arc<Platform>) {
     std::thread::Builder::new()
         .name("signals".into())
@@ -332,10 +326,7 @@ fn spawn_signal_handler(platform: Arc<Platform>) {
                     }
                 }
             });
-            eprintln!("shutting down: saving usage");
-            platform.billing.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
-            // The billing thread exits the process after its final flush.
-            std::thread::sleep(Duration::from_secs(3));
+            eprintln!("shutting down");
             std::process::exit(0);
         })
         .unwrap();

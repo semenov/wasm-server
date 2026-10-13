@@ -51,7 +51,7 @@ pub struct AppCache {
 }
 
 impl AppCache {
-    /// Bytes currently held (approximate), for storage billing.
+    /// Bytes currently held (approximate), for the usage page.
     pub fn weighted_size(&self) -> u64 {
         self.entries.run_pending_tasks();
         self.entries.weighted_size()

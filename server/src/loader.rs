@@ -29,7 +29,6 @@ pub struct Current {
     pub queues: HashMap<String, String>,
     pub crons: Vec<CronJob>,
     /// Credits granted per account.
-    pub credits: HashMap<String, f64>,
     pub deployment: Deployment,
     /// When this version went live.
     pub version: u64,
@@ -142,7 +141,6 @@ pub fn build(
     let mut domains = Vec::new();
     let mut queues = HashMap::new();
     let mut crons = Vec::new();
-    let mut credits = HashMap::new();
     for (i, ((name, spec), (_, component))) in deployment.apps.iter().zip(&named).enumerate() {
         let config = AppConfig {
             databases: spec.databases.clone().into(),
@@ -170,9 +168,6 @@ pub fn build(
         }
         let path = spec.path.clone().unwrap_or_else(|| "/".into());
         domains.extend(spec.domains.iter().map(|d| (d.clone(), path.clone(), name.clone())));
-        if let Some(n) = spec.credits {
-            credits.insert(name.clone(), n);
-        }
         apps.push(app);
     }
     for (name, spec) in &deployment.sites {
@@ -181,13 +176,10 @@ pub fn build(
         statics.push((name.clone(), site));
         let path = spec.path.clone().unwrap_or_else(|| "/".into());
         domains.extend(spec.domains.iter().map(|d| (d.clone(), path.clone(), name.clone())));
-        if let Some(n) = spec.credits {
-            credits.insert(name.clone(), n);
-        }
     }
     let routes = Routes::new(apps, statics, &domains, accounts)?;
     let summary = Summary { apps: deployment.apps.len(), sites: deployment.sites.len(), loaded };
-    Ok((Current { routes, queues, crons, credits, deployment, version }, summary))
+    Ok((Current { routes, queues, crons, deployment, version }, summary))
 }
 
 fn load_site(name: &str, dir: &Path) -> Result<StaticSite> {
