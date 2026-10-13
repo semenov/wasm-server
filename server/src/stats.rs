@@ -40,10 +40,14 @@ pub enum Counter {
     QueueBytes,
     WsMessagesIn,
     WsMessagesOut,
+    /// Outgoing HTTP requests (`wasi:http/outgoing-handler`).
+    OutboundRequests,
+    OutboundBytesSent,
+    OutboundBytesReceived,
 }
 
 impl Counter {
-    pub const ALL: [Counter; 21] = [
+    pub const ALL: [Counter; 24] = [
         Counter::Requests,
         Counter::Errors,
         Counter::Timeouts,
@@ -65,6 +69,9 @@ impl Counter {
         Counter::QueueBytes,
         Counter::WsMessagesIn,
         Counter::WsMessagesOut,
+        Counter::OutboundRequests,
+        Counter::OutboundBytesSent,
+        Counter::OutboundBytesReceived,
     ];
 
     /// Key in `/_platform/stats`.
@@ -91,6 +98,9 @@ impl Counter {
             Counter::QueueBytes => "queue_bytes",
             Counter::WsMessagesIn => "ws_messages_in",
             Counter::WsMessagesOut => "ws_messages_out",
+            Counter::OutboundRequests => "outbound_requests",
+            Counter::OutboundBytesSent => "outbound_bytes_sent",
+            Counter::OutboundBytesReceived => "outbound_bytes_received",
         }
     }
 }

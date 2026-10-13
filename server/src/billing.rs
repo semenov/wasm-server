@@ -38,6 +38,7 @@ pub enum Meter {
     QueueMessages,
     WsMessages,
     WsConnectionMinutes,
+    OutboundRequests,
 }
 
 pub struct MeterInfo {
@@ -52,12 +53,13 @@ pub struct MeterInfo {
 
 /// The default rate card. 1 credit ≈ $0.001; prices are in the range of
 /// public cloud pricing for the same resource.
-pub const METERS: [MeterInfo; 13] = [
+pub const METERS: [MeterInfo; 14] = [
     MeterInfo { meter: Meter::Invocations, key: "invocations", category: "Compute", unit: "invocation", price: 0.0003, description: "HTTP requests, events, calls between functions, WebSocket events" },
     MeterInfo { meter: Meter::Cpu, key: "cpu", category: "Compute", unit: "CPU-second", price: 0.05, description: "Time guest code actually ran" },
     MeterInfo { meter: Meter::Memory, key: "memory", category: "Compute", unit: "GB-second", price: 0.0167, description: "Peak instance memory × instance lifetime" },
     MeterInfo { meter: Meter::StaticRequests, key: "static_requests", category: "Network", unit: "request", price: 0.00005, description: "Static files served by the host" },
-    MeterInfo { meter: Meter::Egress, key: "egress", category: "Network", unit: "GB", price: 50.0, description: "Response bodies, static files, WebSocket messages sent" },
+    MeterInfo { meter: Meter::Egress, key: "egress", category: "Network", unit: "GB", price: 50.0, description: "Response bodies, static files, WebSocket messages and outgoing requests sent" },
+    MeterInfo { meter: Meter::OutboundRequests, key: "outbound_requests", category: "Network", unit: "request", price: 0.0002, description: "HTTP requests apps make to other servers" },
     MeterInfo { meter: Meter::DbCalls, key: "db_calls", category: "Database", unit: "call", price: 0.0002, description: "Queries, statements, transaction steps" },
     MeterInfo { meter: Meter::DbTime, key: "db_time", category: "Database", unit: "second", price: 0.02, description: "Time spent in the database" },
     MeterInfo { meter: Meter::DbStorage, key: "db_storage", category: "Database", unit: "GB-hour", price: 1.0, description: "SQLite files (with WAL), sampled every minute" },
@@ -423,7 +425,8 @@ pub fn spawn(platform: Arc<Platform>) -> Result<()> {
                     billing.add(&mut state, name, Meter::StaticRequests, d(Counter::StaticRequests));
                     billing.add(&mut state, name, Meter::Cpu, d(Counter::CpuNs) / 1e9);
                     billing.add(&mut state, name, Meter::Memory, d(Counter::MemKibMs) / (1024.0 * 1024.0) / 1000.0);
-                    billing.add(&mut state, name, Meter::Egress, d(Counter::EgressBytes) / 1e9);
+                    billing.add(&mut state, name, Meter::Egress, (d(Counter::EgressBytes) + d(Counter::OutboundBytesSent)) / 1e9);
+                    billing.add(&mut state, name, Meter::OutboundRequests, d(Counter::OutboundRequests));
                     billing.add(&mut state, name, Meter::DbCalls, d(Counter::DbQueries));
                     billing.add(&mut state, name, Meter::DbTime, d(Counter::DbWaitNs) / 1e9);
                     billing.add(&mut state, name, Meter::CacheOps, d(Counter::CacheOps));

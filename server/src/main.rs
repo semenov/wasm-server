@@ -13,6 +13,7 @@ mod flags;
 mod functions;
 mod jobs;
 mod loader;
+mod outbound;
 mod platform;
 mod routes;
 mod server;
@@ -142,6 +143,12 @@ enum Command {
         /// Environment variable for an app, as APP:KEY=VALUE.
         #[arg(long = "env", value_parser = parse_env)]
         envs: Vec<(String, String, String)>,
+        /// A host an app may send HTTP requests to, as APP=HOST (`*.example.com`
+        /// for subdomains; repeat for more; APP=none for no requests at all).
+        /// Without it the app may reach any public host. Private, loopback and
+        /// cloud metadata addresses are always refused.
+        #[arg(long = "outbound", value_parser = parse_pair)]
+        outbound: Vec<(String, String)>,
         #[arg(short, long, default_value = "127.0.0.1:8080")]
         listen: SocketAddr,
         /// Worker threads; defaults to the number of CPUs.
@@ -299,6 +306,7 @@ fn main() -> Result<()> {
             job_workers,
             cache_mb,
             envs,
+            outbound,
             listen,
             workers,
             timeout_ms,
@@ -322,6 +330,7 @@ fn main() -> Result<()> {
                     websockets,
                     credits,
                     envs,
+                    outbound,
                 })?),
             };
             let deployment = source.load()?;
@@ -428,6 +437,7 @@ fn main() -> Result<()> {
                 cache: Arc::new(cache::AppCache::new(64 << 20)),
                 links: Arc::default(),
                 websocket_path: None,
+                outbound: Arc::default(),
             };
             let component = app::load_component(&engine, "bench", &app)?;
             let app = app::App::new(&linker, 0, "bench", &component, config)?;

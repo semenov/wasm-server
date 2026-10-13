@@ -200,6 +200,25 @@ let s = stats::summary(code);   // runs in a fresh `stats` instance, with stats'
 Apps import the `platform:sdk/imports` world (or `events-handler` to also
 receive events). A component only imports the interfaces it actually uses.
 
+### Outgoing HTTP
+
+Apps call other servers with standard `wasi:http/outgoing-handler`
+(`server/src/outbound.rs`):
+
+- **Where:** any public host, or only the hosts in the app's `outbound`
+  list (`outbound = ["api.stripe.com", "*.openai.com"]`, `--outbound
+  APP=HOST`; `[]` or `APP=none`: no requests). Loopback, private, link-local,
+  cloud metadata and other non-public addresses are always refused, checked
+  after DNS on every address of the name, and the connection goes to a
+  checked address. A refusal is logged with the app's name.
+- **Connections** are kept per worker and per host for 60 s and reused: to
+  example.com a request takes 8 ms on a kept connection, 25–35 ms on a new
+  one (TCP and TLS handshakes).
+- **Timeouts:** connect 10 s, first byte 30 s, between bytes 30 s, or less
+  through `request-options`; the request's wall-clock limit covers all.
+- **Metered:** `outbound_requests` (billed per request), and bytes sent
+  (billed as egress) and received.
+
 ### Databases
 
 Apps name databases (`"main"`) and need a grant. URLs and credentials never
@@ -417,6 +436,7 @@ browser ── short.localhost ──► static site (host)
 - **`--max-memory-mb`:** memory limit per instance (64).
 - **`--pool-size`:** maximum number of concurrent instances (1000).
 - **`--env APP:KEY=VALUE`:** an environment variable for an app, e.g. a secret.
+- **`--outbound APP=HOST`:** a host the app may call (see Outgoing HTTP).
 - **`--keep-resident-kib`:** Linux only; how much memory each pool slot keeps
   between requests (2048).
 
@@ -489,10 +509,8 @@ docker compose run --rm bench --suite ...        # the same on Linux
 - Per-tenant credit pools and quotas (today credits are per app).
 - SQLite replication (read replicas, continuous backup to object storage).
 - Queues across servers (NATS JetStream), as described in `docs/hosting.md`.
-- **Outbound HTTP protection (an open SSRF hole today):** deny loopback,
-  private and metadata addresses after DNS resolution, a per-app allow-list
-  (`outbound = [...]`), metering of outbound requests and bytes, pooled
-  connections and connect and first-byte timeouts. See `docs/findings.md`.
+- Outgoing HTTP: HTTP/2 to hosts that offer it, and a private-address
+  allow-list for apps that need a service on the same network.
 - WASI 0.3 (native async): wasmtime 49 already runs it, so try one Rust app on
   nightly (`wasm32-wasip3`) next to the 0.2 apps; move fully once the target
   is stable. Streaming responses will need a longer request limit.

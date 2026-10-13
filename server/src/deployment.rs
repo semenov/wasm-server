@@ -95,6 +95,9 @@ pub struct AppSpec {
     pub links: BTreeMap<String, String>,
     pub credits: Option<f64>,
     pub db_timeout_ms: Option<u64>,
+    /// Hosts the app may send HTTP requests to (`api.example.com`,
+    /// `*.example.com`); not set: any public host; empty: none.
+    pub outbound: Option<Vec<String>>,
     /// The tenant that owns the app (deploys it, sees its usage).
     pub tenant: Option<String>,
 }

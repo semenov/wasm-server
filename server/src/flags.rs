@@ -19,6 +19,7 @@ pub struct Flags {
     pub websockets: Vec<(String, String)>,
     pub credits: Vec<(String, String)>,
     pub envs: Vec<(String, String, String)>,
+    pub outbound: Vec<(String, String)>,
 }
 
 fn app<'a>(d: &'a mut Deployment, flag: &str, name: &str) -> Result<&'a mut AppSpec> {
@@ -54,6 +55,12 @@ pub fn deployment(f: Flags) -> Result<Deployment> {
     }
     for (name, iface, target) in &f.links {
         app(&mut d, "--link", name)?.links.insert(iface.clone(), target.clone());
+    }
+    for (name, host) in &f.outbound {
+        let list = app(&mut d, "--outbound", name)?.outbound.get_or_insert_with(Vec::new);
+        if host != "none" {
+            list.push(host.clone());
+        }
     }
     for (name, path) in &f.websockets {
         app(&mut d, "--websocket", name)?.websocket = Some(path.clone());

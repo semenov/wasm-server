@@ -2842,6 +2842,7 @@ dependencies = [
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
+ "tokio-rustls",
  "tokio-tungstenite",
  "toml",
  "wasmtime",

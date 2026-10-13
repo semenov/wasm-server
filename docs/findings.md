@@ -107,9 +107,10 @@ Checked with a probe app (`?url=` through `wasi:http`, `?tcp=` through
 | Raw TCP (`wasi:sockets`) anywhere | Denied (the default address check refuses all) |
 | A hanging upstream | Cut by the request's wall-clock limit (504) |
 
-**This is an open SSRF hole.** `WasiHttpView::http` passes default hooks, so
-`send_request` has no policy. Planned fix, all in the `send_request` hook
-(shared by WASI 0.2 and 0.3 in wasmtime 49), no app changes:
+**This was an open SSRF hole** (fixed 2026-10-13, below). `WasiHttpView::http`
+passed default hooks, so `send_request` had no policy. The fix, all in the
+`send_request` hook (shared by WASI 0.2 and 0.3 in wasmtime 49), no app
+changes:
 
 1. Deny loopback, private, link-local and metadata addresses by default;
    check after DNS resolution and connect to the checked IP.
@@ -117,6 +118,15 @@ Checked with a probe app (`?url=` through `wasi:http`, `?tcp=` through
 3. Count outbound requests and bytes in stats and billing.
 4. A connection pool per worker (now every call does a new TCP and TLS
    handshake, about 190 ms to GitHub) and connect and first-byte timeouts.
+
+**Done (2026-10-13, `server/src/outbound.rs`).** Checked with a Plumb app:
+loopback (the admin endpoints included), `localhost`, `[::1]`, 10.0.0.1,
+169.254.169.254 and a public name resolving to 127.0.0.1 (`127.0.0.1.nip.io`)
+are refused; an app with `outbound = ["example.com", "*.github.com"]` reaches
+those and is refused github.com. A kept connection makes a request to
+example.com take 8 ms instead of 25–35 ms. Allowing all public hosts by
+default fits our case (a developer's own apps); a host for strangers' apps
+would rather start from an empty list.
 
 ## WASI status (checked 2026-10-10)
 

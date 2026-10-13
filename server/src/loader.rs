@@ -151,6 +151,7 @@ pub fn build(
             cache: accounts.cache(name, defaults.cache_bytes),
             links: Arc::new(plan.links[i].clone()),
             websocket_path: spec.websocket.clone(),
+            outbound: Arc::new(crate::outbound::Policy::new(spec.outbound.as_deref())),
         };
         let app = App::new(&linker, accounts.id(name)?, name, component, config)?;
         if (!spec.queues.is_empty() || !spec.cron.is_empty()) && app.events.is_none() {

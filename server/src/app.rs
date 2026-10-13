@@ -39,6 +39,8 @@ pub struct RequestState {
     pub call_wait: Duration,
     /// The app's account, for usage counters.
     pub app_id: usize,
+    /// Outgoing HTTP: where the app may go, and its connections.
+    pub outbound: crate::outbound::Hooks,
 }
 
 impl RequestState {
@@ -124,7 +126,7 @@ impl WasiHttpView for RequestState {
         WasiHttpCtxView {
             ctx: &mut self.http,
             table: &mut self.table,
-            hooks: Default::default(),
+            hooks: &mut self.outbound,
         }
     }
 }
@@ -159,6 +161,8 @@ pub struct AppConfig {
     pub links: Arc<HashMap<String, String>>,
     /// Path on the app's site where WebSocket upgrades are accepted.
     pub websocket_path: Option<String>,
+    /// Hosts the app may send HTTP requests to.
+    pub outbound: Arc<crate::outbound::Policy>,
 }
 
 impl App {
@@ -191,6 +195,13 @@ impl App {
                 links: self.config.links.clone(),
                 call_wait: Duration::ZERO,
                 app_id: self.id,
+                outbound: crate::outbound::Hooks {
+                    app: self.name.as_str().into(),
+                    policy: self.config.outbound.clone(),
+                    platform: env.platform.clone(),
+                    worker: env.worker,
+                    app_id: self.id,
+                },
             },
         );
         store.limiter(|s| &mut s.limits);
