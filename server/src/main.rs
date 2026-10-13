@@ -19,6 +19,7 @@ mod routes;
 mod server;
 mod static_files;
 mod stats;
+mod tls;
 mod versions;
 mod ws;
 
@@ -143,6 +144,26 @@ enum Command {
         /// Environment variable for an app, as APP:KEY=VALUE.
         #[arg(long = "env", value_parser = parse_env)]
         envs: Vec<(String, String, String)>,
+        /// HTTPS on --listen, with certificates from Let's Encrypt for every
+        /// domain in the deployment; port 80 (--http-listen) answers the
+        /// CA's challenges and redirects to https. Typically:
+        /// `--https --listen 0.0.0.0:443 --acme-email you@example.com`.
+        #[arg(long)]
+        https: bool,
+        /// Port 80 for --https.
+        #[arg(long, default_value = "0.0.0.0:80")]
+        http_listen: SocketAddr,
+        /// Contact address for Let's Encrypt (expiry warnings).
+        #[arg(long)]
+        acme_email: Option<String>,
+        /// ACME server: `production` (Let's Encrypt, the default), `staging`
+        /// (Let's Encrypt's test CA, for trying a setup), or a directory URL.
+        #[arg(long)]
+        acme_directory: Option<String>,
+        /// A root certificate (PEM) for the ACME server's TLS, for a test CA
+        /// such as Pebble.
+        #[arg(long)]
+        acme_ca_file: Option<PathBuf>,
         /// A host an app may send HTTP requests to, as APP=HOST (`*.example.com`
         /// for subdomains; repeat for more; APP=none for no requests at all).
         /// Without it the app may reach any public host. Private, loopback and
@@ -307,6 +328,11 @@ fn main() -> Result<()> {
             cache_mb,
             envs,
             outbound,
+            https,
+            http_listen,
+            acme_email,
+            acme_directory,
+            acme_ca_file,
             listen,
             workers,
             timeout_ms,
@@ -405,7 +431,19 @@ fn main() -> Result<()> {
                 }),
                 reload: platform::Reloader::new(engine, source, defaults, components),
             }));
-            server::serve(platform, server::ServeOpts { listen, workers, job_workers })?;
+            let tls = if https {
+                let opts = tls::TlsOpts {
+                    directory: tls::directory_url(acme_directory.as_deref()),
+                    email: acme_email,
+                    ca_file: acme_ca_file,
+                    http_listen,
+                    https_port: listen.port(),
+                };
+                Some(tls::start(platform.clone(), opts)?)
+            } else {
+                None
+            };
+            server::serve(platform, server::ServeOpts { listen, workers, job_workers, tls })?;
         }
         Command::Deploy { url, app, file, token } => client::deploy(&url, &app, &file, token.as_deref())?,
         Command::Reload { url, token } => client::reload(&url, token.as_deref())?,

@@ -30,6 +30,8 @@ pub struct ServeOpts {
     pub workers: usize,
     /// Threads delivering queue messages and cron ticks.
     pub job_workers: usize,
+    /// HTTPS on `listen` (`--https`): certificates from `tls.rs`.
+    pub tls: Option<Arc<rustls::ServerConfig>>,
 }
 
 pub fn serve(shared: Arc<Platform>, opts: ServeOpts) -> Result<()> {
@@ -44,16 +46,18 @@ pub fn serve(shared: Arc<Platform>, opts: ServeOpts) -> Result<()> {
     }
 
     let sources = bind(opts.listen, opts.workers)?;
-    eprintln!("listening on http://{} with {} workers", opts.listen, opts.workers);
+    let scheme = if opts.tls.is_some() { "https" } else { "http" };
+    eprintln!("listening on {scheme}://{} with {} workers", opts.listen, opts.workers);
 
     let handles: Vec<_> = sources
         .into_iter()
         .enumerate()
         .map(|(i, source)| {
             let shared = shared.clone();
+            let tls = opts.tls.clone();
             std::thread::Builder::new()
                 .name(format!("worker-{i}"))
-                .spawn(move || worker(i, source, shared))
+                .spawn(move || worker(i, source, shared, tls))
                 .unwrap()
         })
         .collect();
@@ -66,7 +70,8 @@ pub fn serve(shared: Arc<Platform>, opts: ServeOpts) -> Result<()> {
 /// One single-threaded runtime per core: no work stealing and no cross-core
 /// synchronization on the request path. Database pools are per worker too,
 /// so a connection's I/O always runs on the core that uses it.
-fn worker(id: usize, source: ConnSource, shared: Arc<Platform>) -> Result<()> {
+fn worker(id: usize, source: ConnSource, shared: Arc<Platform>, tls: Option<Arc<rustls::ServerConfig>>) -> Result<()> {
+    let tls = tls.map(tokio_rustls::TlsAcceptor::from);
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     let pools = Arc::new(Pools::new(&shared.databases, shared.db_pool_size, &shared.db_tls)?);
     rt.block_on(async move {
@@ -91,21 +96,33 @@ fn worker(id: usize, source: ConnSource, shared: Arc<Platform>) -> Result<()> {
             let _ = stream.set_nodelay(true);
             let shared = shared.clone();
             let pools = pools.clone();
+            let tls = tls.clone();
             tokio::spawn(async move {
-                let service = hyper::service::service_fn(move |req| {
-                    let shared = shared.clone();
-                    let pools = pools.clone();
-                    async move { Ok::<_, Infallible>(handle(shared, id, pools, req).await) }
-                });
-                // Client disconnects are normal; nothing useful to report.
-                let _ = http1::Builder::new()
-                    .keep_alive(true)
-                    .serve_connection(TokioIo::new(stream), service)
-                    .with_upgrades()
-                    .await;
+                match tls {
+                    // a client that doesn't finish its handshake in 10 s is dropped
+                    Some(acceptor) => {
+                        if let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_secs(10), acceptor.accept(stream)).await {
+                            serve_connection(stream, shared, id, pools).await;
+                        }
+                    }
+                    None => serve_connection(stream, shared, id, pools).await,
+                }
             });
         }
     })
+}
+
+async fn serve_connection<I>(io: I, shared: Arc<Platform>, id: usize, pools: Arc<Pools>)
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let service = hyper::service::service_fn(move |req| {
+        let shared = shared.clone();
+        let pools = pools.clone();
+        async move { Ok::<_, Infallible>(handle(shared, id, pools, req).await) }
+    });
+    // Client disconnects are normal; nothing useful to report.
+    let _ = http1::Builder::new().keep_alive(true).serve_connection(TokioIo::new(io), service).with_upgrades().await;
 }
 
 /// Paths under this prefix are the platform's own: stats, and queue and

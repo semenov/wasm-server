@@ -34,3 +34,5 @@ serde = { version = "1", features = ["derive"] }
 toml = "1"
 arc-swap = "1"
 sha2 = "0.11"
+instant-acme = { version = "0.8", default-features = false, features = ["ring", "hyper-rustls", "rcgen"] }
+x509-parser = "0.18"

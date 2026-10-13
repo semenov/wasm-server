@@ -427,6 +427,29 @@ browser ── short.localhost ──► static site (host)
 - **Rate limit:** at most 5 messages per second per connection, counted with
   the cache's `incr`.
 
+## HTTPS
+
+`--https` serves `--listen` over TLS with certificates from Let's Encrypt for
+every domain in the deployment, the usual setup on one server:
+
+```sh
+wasm-server serve --config platform.toml --https --listen 0.0.0.0:443 \
+  --acme-email you@example.com --admin-token "$TOKEN"
+```
+
+- **Certificates** come through ACME's HTTP-01 challenge, which port 80
+  (`--http-listen`, `0.0.0.0:80` by default) answers; everything else there
+  is redirected to https. The domain's DNS must point at the server.
+- **New domains** (added by a reload or deploy) get a certificate within a
+  minute; certificates are renewed 30 days before they expire, and kept in
+  `<data-dir>/certs` with the ACME account, so a restart reuses them.
+- **Failures** (DNS not pointing here yet, port 80 closed) are logged and
+  retried after 5 minutes, then less often, up to every 6 hours, well
+  inside Let's Encrypt's rate limits.
+- **Trying it out:** `--acme-directory staging` uses Let's Encrypt's test CA;
+  `--acme-directory URL --acme-ca-file PEM` any ACME server (tested with
+  [Pebble](https://github.com/letsencrypt/pebble)).
+
 ## Other `serve` options
 
 - **`--workers`:** HTTP worker threads (default: number of CPUs).
