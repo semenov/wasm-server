@@ -82,7 +82,9 @@ pub fn list(dir: &Path, db: &str) -> Vec<Snapshot> {
 
 /// SQLite databases of the platform: (name, file).
 pub fn sqlite_databases(platform: &Platform) -> Vec<(String, PathBuf)> {
-    platform.databases.iter().filter_map(|db| Some((db.name.clone(), PathBuf::from(db.url.strip_prefix("sqlite:")?)))).collect()
+    let mut out: Vec<(String, PathBuf)> = platform.databases.iter().filter_map(|db| Some((db.name.clone(), PathBuf::from(db.url.strip_prefix("sqlite:")?)))).collect();
+    out.extend(crate::managed::databases(&platform.data_dir));
+    out
 }
 
 /// Snapshots every SQLite database on a schedule.

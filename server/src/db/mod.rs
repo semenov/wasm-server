@@ -21,8 +21,8 @@ use crate::app::RequestState;
 use crate::bindings::sql::{self, Error, QueryResult, Value};
 use std::collections::HashMap;
 use std::error::Error as StdError;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use wasmtime::component::{HasSelf, Linker, Resource};
 use wasmtime::{Result, format_err};
@@ -46,9 +46,29 @@ enum Backend {
     Sqlite(Arc<sqlite::Pool>),
 }
 
+/// A database as one call uses it.
+enum BackendRef<'a> {
+    Postgres(&'a postgres::DbPool),
+    Sqlite(Arc<sqlite::Pool>),
+}
+
+/// Where apps deployed over the API keep their databases
+/// (`<data-dir>/apps`): the database `notes/main` is the SQLite file
+/// `apps/notes/db/main.db`. Set once at startup.
+pub static MANAGED_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// The file of a deployed app's database `app/name`.
+pub fn managed_file(real: &str) -> Option<PathBuf> {
+    let (app, name) = real.split_once('/')?;
+    Some(MANAGED_DIR.get()?.join(app).join("db").join(format!("{name}.db")))
+}
+
 /// One worker's connections, keyed by database name.
 pub struct Pools {
     by_name: HashMap<String, Backend>,
+    /// Deployed apps' databases, opened on first use.
+    managed: Mutex<HashMap<String, Arc<sqlite::Pool>>>,
+    size_per_db: usize,
 }
 
 impl Pools {
@@ -63,7 +83,19 @@ impl Pools {
             };
             by_name.insert(db.name.clone(), backend);
         }
-        Ok(Self { by_name })
+        Ok(Self { by_name, managed: Mutex::default(), size_per_db })
+    }
+
+    fn get(&self, db: &str) -> Option<BackendRef<'_>> {
+        match self.by_name.get(db) {
+            Some(Backend::Postgres(p)) => return Some(BackendRef::Postgres(p)),
+            Some(Backend::Sqlite(p)) => return Some(BackendRef::Sqlite(p.clone())),
+            None => {}
+        }
+        let file = managed_file(db)?;
+        let mut managed = self.managed.lock().unwrap();
+        let pool = managed.entry(db.to_string()).or_insert_with(|| sqlite::Pool::new(&file, self.size_per_db));
+        Some(BackendRef::Sqlite(pool.clone()))
     }
 
     /// At startup: runs each database's init SQL, then connects to every
@@ -105,6 +137,9 @@ pub struct DbCtx {
     pools: Arc<Pools>,
     /// Database names this app was granted.
     granted: Arc<[String]>,
+    /// The app's own names for its databases, for deployed apps (`main` →
+    /// `notes/main`).
+    aliases: Arc<HashMap<String, String>>,
     /// Limit for each database call, including waiting for a connection.
     timeout: Duration,
     pub queries: u64,
@@ -113,15 +148,16 @@ pub struct DbCtx {
 }
 
 impl DbCtx {
-    pub fn new(pools: Arc<Pools>, granted: Arc<[String]>, timeout: Duration) -> Self {
-        Self { pools, granted, timeout, queries: 0, wait: Duration::ZERO }
+    pub fn new(pools: Arc<Pools>, granted: Arc<[String]>, aliases: Arc<HashMap<String, String>>, timeout: Duration) -> Self {
+        Self { pools, granted, aliases, timeout, queries: 0, wait: Duration::ZERO }
     }
 
-    fn backend(&self, db: &str) -> Result<&Backend, Error> {
-        if !self.granted.iter().any(|g| g == db) {
+    fn backend(&self, db: &str) -> Result<BackendRef<'_>, Error> {
+        let real = self.aliases.get(db).map_or(db, |r| r.as_str());
+        if !self.granted.iter().any(|g| g == real) {
             return Err(Error::NotAllowed(format!("no grant for database {db:?}")));
         }
-        self.pools.by_name.get(db).ok_or_else(|| Error::NotAllowed(format!("unknown database {db:?}")))
+        self.pools.get(real).ok_or_else(|| Error::NotAllowed(format!("unknown database {db:?}")))
     }
 
     fn deadline(&self) -> tokio::time::Instant {
@@ -155,8 +191,8 @@ impl sql::Host for RequestState {
         let started = Instant::now();
         let deadline = self.db.deadline();
         let result = match self.db.backend(&db) {
-            Ok(Backend::Postgres(pool)) => pool.query(deadline, statement, params).await,
-            Ok(Backend::Sqlite(pool)) => pool.clone().query(deadline, statement, params).await,
+            Ok(BackendRef::Postgres(pool)) => pool.query(deadline, statement, params).await,
+            Ok(BackendRef::Sqlite(pool)) => pool.clone().query(deadline, statement, params).await,
             Err(e) => Err(e),
         };
         self.db.record(started);
@@ -167,8 +203,8 @@ impl sql::Host for RequestState {
         let started = Instant::now();
         let deadline = self.db.deadline();
         let result = match self.db.backend(&db) {
-            Ok(Backend::Postgres(pool)) => pool.execute(deadline, statement, params).await,
-            Ok(Backend::Sqlite(pool)) => pool.clone().execute(deadline, statement, params).await,
+            Ok(BackendRef::Postgres(pool)) => pool.execute(deadline, statement, params).await,
+            Ok(BackendRef::Sqlite(pool)) => pool.clone().execute(deadline, statement, params).await,
             Err(e) => Err(e),
         };
         self.db.record(started);
@@ -181,8 +217,8 @@ impl sql::HostTransaction for RequestState {
         let started = Instant::now();
         let deadline = self.db.deadline();
         let result = match self.db.backend(&db) {
-            Ok(Backend::Postgres(pool)) => pool.begin(deadline).await.map(Transaction::Postgres),
-            Ok(Backend::Sqlite(pool)) => pool.clone().begin(deadline).await.map(Transaction::Sqlite),
+            Ok(BackendRef::Postgres(pool)) => pool.begin(deadline).await.map(Transaction::Postgres),
+            Ok(BackendRef::Sqlite(pool)) => pool.clone().begin(deadline).await.map(Transaction::Sqlite),
             Err(e) => Err(e),
         };
         self.db.record(started);
@@ -240,8 +276,8 @@ impl sql::HostCursor for RequestState {
         let started = Instant::now();
         let deadline = self.db.deadline();
         let result = match self.db.backend(&db) {
-            Ok(Backend::Postgres(pool)) => pool.open_cursor(deadline, statement, params).await.map(Cursor::Postgres),
-            Ok(Backend::Sqlite(pool)) => pool.clone().open_cursor(deadline, statement, params).await.map(Cursor::Sqlite),
+            Ok(BackendRef::Postgres(pool)) => pool.open_cursor(deadline, statement, params).await.map(Cursor::Postgres),
+            Ok(BackendRef::Sqlite(pool)) => pool.clone().open_cursor(deadline, statement, params).await.map(Cursor::Sqlite),
             Err(e) => Err(e),
         };
         self.db.record(started);

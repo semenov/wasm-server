@@ -100,6 +100,10 @@ pub struct AppSpec {
     pub outbound: Option<Vec<String>>,
     /// The tenant that owns the app (deploys it, sees its usage).
     pub tenant: Option<String>,
+    /// For apps deployed over the API: the app's own database names →
+    /// the server's (`main` → `notes/main`).
+    #[serde(skip)]
+    pub db_aliases: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -121,8 +125,9 @@ pub enum Source {
 }
 
 impl Source {
-    pub fn load(&self) -> Result<Deployment> {
-        let deployment = match self {
+    /// The deployment, with the apps deployed over the API (`managed.rs`).
+    pub fn load(&self, data_dir: &Path) -> Result<Deployment> {
+        let mut deployment = match self {
             Source::Flags(d) => d.clone(),
             Source::File(path) => {
                 let text = std::fs::read_to_string(path).map_err(|e| format_err!("{}: {e}", path.display()))?;
@@ -131,6 +136,7 @@ impl Source {
                 d
             }
         };
+        crate::managed::add_to(&mut deployment, data_dir)?;
         deployment.validate()?;
         Ok(deployment)
     }
@@ -179,9 +185,6 @@ impl Deployment {
 
     /// Checks references between parts (without loading anything).
     pub fn validate(&self) -> Result<()> {
-        if self.apps.is_empty() && self.sites.is_empty() {
-            bail!("nothing to serve: no apps or sites");
-        }
         for name in self.sites.keys() {
             if self.apps.contains_key(name) {
                 bail!("{name:?} is both an app and a site; give the app a `static` directory instead");
@@ -191,7 +194,8 @@ impl Deployment {
         let mut queues = BTreeMap::new();
         for (name, app) in &self.apps {
             for db in &app.databases {
-                if !self.databases.contains_key(db) {
+                // `app/name`: a deployed app's own SQLite database
+                if !self.databases.contains_key(db) && !db.contains('/') {
                     bail!("app {name:?} uses database {db:?}, which isn't defined");
                 }
             }

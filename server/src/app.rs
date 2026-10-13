@@ -163,6 +163,8 @@ pub struct AppConfig {
     pub websocket_path: Option<String>,
     /// Hosts the app may send HTTP requests to.
     pub outbound: Arc<crate::outbound::Policy>,
+    /// The app's own names for its databases (deployed apps).
+    pub db_aliases: Arc<HashMap<String, String>>,
 }
 
 impl App {
@@ -188,7 +190,7 @@ impl App {
                 wasi: WasiCtx::builder().inherit_stdout().inherit_stderr().envs(&self.config.env).build(),
                 http: WasiHttpCtx::new(),
                 limits: Limits { max_memory: limits.max_memory, memory: 0 },
-                db: DbCtx::new(env.pools.clone(), self.config.databases.clone(), self.config.db_timeout),
+                db: DbCtx::new(env.pools.clone(), self.config.databases.clone(), self.config.db_aliases.clone(), self.config.db_timeout),
                 cpu: CpuMeter::new(limits.cpu_limit),
                 cache: self.config.cache.clone(),
                 env: env.clone(),

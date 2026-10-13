@@ -13,6 +13,7 @@ mod flags;
 mod functions;
 mod jobs;
 mod loader;
+mod managed;
 mod outbound;
 mod platform;
 mod routes;
@@ -359,7 +360,11 @@ fn main() -> Result<()> {
                     outbound,
                 })?),
             };
-            let deployment = source.load()?;
+            db::MANAGED_DIR.set(data_dir.join("apps")).ok();
+            let deployment = source.load(&data_dir)?;
+            if deployment.apps.is_empty() && deployment.sites.is_empty() {
+                eprintln!("note: no apps yet; deploy one (plumb deploy, or PUT /_platform/apps/NAME/deploy)");
+            }
             eprintln!("deployment: {}", source.describe());
 
             // Databases are fixed for the server's lifetime: every worker
@@ -476,6 +481,7 @@ fn main() -> Result<()> {
                 links: Arc::default(),
                 websocket_path: None,
                 outbound: Arc::default(),
+                db_aliases: Arc::default(),
             };
             let component = app::load_component(&engine, "bench", &app)?;
             let app = app::App::new(&linker, 0, "bench", &component, config)?;

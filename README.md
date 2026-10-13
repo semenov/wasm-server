@@ -427,6 +427,26 @@ browser ── short.localhost ──► static site (host)
 - **Rate limit:** at most 5 messages per second per connection, counted with
   the cache's `incr`.
 
+## Deploying apps over the API (`plumb deploy`)
+
+Besides the apps in the deployment file, the admin can create apps over
+`/_platform/` (`server/src/managed.rs`), which is what `plumb deploy` does:
+
+- **`POST /_platform/apps/NAME/deploy`** with JSON `{"settings": {"domains":
+  [...], "databases": ["main"], "outbound": [...]}, "schema": {"main": "create
+  table if not exists ..."}, "component": "<base64 .wasm>"}` creates or
+  replaces the app without downtime. The schema runs first; if the new
+  version doesn't load, the previous one stays.
+- **Databases** are the app's own SQLite files, which its code opens by its
+  own names (`db.open("main")`); they are backed up and billed like the
+  others.
+- **`PUT /_platform/apps/NAME/secrets`** with `{"KEY": "value", "OLD": null}`
+  sets or removes environment variables, kept owner-only on disk; `GET`
+  lists their names.
+- Everything lives in `<data-dir>/apps/NAME/` (`app.toml`, `app.cwasm`,
+  `db/`, `secrets.json`), so a restart brings the apps back. A server can
+  start with no apps at all and wait for its first deploy.
+
 ## HTTPS
 
 `--https` serves `--listen` over TLS with certificates from Let's Encrypt for

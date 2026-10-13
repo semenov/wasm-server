@@ -389,6 +389,14 @@ pub fn storage_owners(platform: &Platform) -> Vec<(String, PathBuf)> {
             out.push((owner.clone(), PathBuf::from(path)));
         }
     }
+    // deployed apps' own databases: `app/name`
+    for (name, path) in crate::managed::databases(&platform.data_dir) {
+        if let Some((app, _)) = name.split_once('/') {
+            if names.iter().any(|n| n == app) {
+                out.push((app.to_string(), path));
+            }
+        }
+    }
     out
 }
 

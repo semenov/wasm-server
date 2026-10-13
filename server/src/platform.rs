@@ -130,7 +130,7 @@ impl Platform {
     pub fn reload(&self) -> Result<Summary> {
         let r = &self.reload;
         let mut components = r.components.lock().unwrap();
-        let deployment = r.source.load()?;
+        let deployment = r.source.load(&self.data_dir)?;
         let current = self.current();
         if deployment.databases != current.deployment.databases {
             bail!("databases changed; restart the server to apply that");

@@ -5,6 +5,8 @@
 //! | `/_platform/` | GET | any | usage and billing dashboard |
 //! | `billing`, `stats`, `jobs` | GET | any | JSON (a tenant sees its own apps) |
 //! | `apps/NAME` | PUT | owner | upload a new component, then reload |
+//! | `apps/NAME/deploy` | POST | admin | create or update an app with its settings (`managed.rs`) |
+//! | `apps/NAME/secrets` | GET, PUT | admin | a deployed app's secret names; set or remove secrets |
 //! | `apps/NAME/versions` | GET | owner | saved previous versions |
 //! | `apps/NAME/rollback[?to=ID]` | POST | owner | back to the previous (or given) version |
 //! | `reload` | POST | admin | re-read the deployment and switch to it |
@@ -148,6 +150,13 @@ async fn route(platform: Arc<Platform>, req: Request<Incoming>, path: &str, who:
             error(StatusCode::FORBIDDEN, &format!("not allowed to manage {app:?}"))
         }
         (&Method::PUT, ["apps", app]) => deploy(platform, req, app.to_string()).await,
+        (&Method::POST, ["apps", app, "deploy"]) if who == Principal::Admin => deploy_managed(platform, req, app.to_string()).await,
+        (&Method::GET, ["apps", app, "secrets"]) if who == Principal::Admin => match crate::managed::secret_names(&platform.data_dir, app) {
+            Ok(names) => json(StatusCode::OK, serde_json::json!({ "names": names }).to_string()),
+            Err(e) => error(StatusCode::NOT_FOUND, &e.to_string()),
+        },
+        (&Method::PUT, ["apps", app, "secrets"]) if who == Principal::Admin => set_secrets(platform, req, app.to_string()).await,
+        (_, ["apps", _, "deploy" | "secrets"]) => admin_only(),
         (&Method::GET, ["apps", app, "versions"]) => list_versions(&platform, app),
         (&Method::POST, ["apps", app, "rollback"]) => {
             let to = query.split('&').find_map(|kv| kv.strip_prefix("to=")).map(str::to_string);
@@ -242,6 +251,63 @@ async fn deploy(platform: Arc<Platform>, req: Request<Incoming>, app: String) ->
         if let Some(saved) = saved {
             let _ = versions::install(&saved, &target);
         }
+    }
+    resp
+}
+
+/// `plumb deploy`: an app with its settings and schema, created or replaced
+/// without downtime; if the new version doesn't load, the old one stays.
+async fn deploy_managed(platform: Arc<Platform>, req: Request<Incoming>, app: String) -> Response<HyperOutgoingBody> {
+    let bytes = match Limited::new(req.into_body(), MAX_UPLOAD * 2).collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(e) => return error(StatusCode::PAYLOAD_TOO_LARGE, &e.to_string()),
+    };
+    let upload: crate::managed::Upload = match serde_json::from_slice(&bytes) {
+        Ok(u) => u,
+        Err(e) => return error(StatusCode::BAD_REQUEST, &format!("the deploy request: {e}")),
+    };
+    let current = platform.current();
+    let root = crate::managed::root(&platform.data_dir);
+    let fixed: Vec<String> = current
+        .deployment
+        .apps
+        .iter()
+        .filter(|(_, spec)| !spec.component.starts_with(&root))
+        .map(|(n, _)| n.clone())
+        .chain(current.deployment.sites.keys().cloned())
+        .collect();
+    drop(current);
+    let engine = platform.engine().clone();
+    let (data_dir, name) = (platform.data_dir.clone(), app.clone());
+    let staged = match tokio::task::spawn_blocking(move || crate::managed::stage(&engine, &data_dir, &name, upload, &fixed)).await {
+        Ok(Ok(staged)) => staged,
+        Ok(Err(e)) => return error(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
+        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    let resp = reload(platform, vec![app]).await;
+    if resp.status() != StatusCode::OK {
+        staged.restore();
+    }
+    resp
+}
+
+/// Sets or removes secrets: `{"KEY": "value", "OLD": null}`; then reloads.
+async fn set_secrets(platform: Arc<Platform>, req: Request<Incoming>, app: String) -> Response<HyperOutgoingBody> {
+    let bytes = match Limited::new(req.into_body(), 1 << 20).collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(e) => return error(StatusCode::PAYLOAD_TOO_LARGE, &e.to_string()),
+    };
+    let changes: std::collections::BTreeMap<String, Option<String>> = match serde_json::from_slice(&bytes) {
+        Ok(c) => c,
+        Err(e) => return error(StatusCode::BAD_REQUEST, &format!("expected {{\"KEY\": \"value\" or null}}: {e}")),
+    };
+    let before = match crate::managed::set_secrets(&platform.data_dir, &app, changes) {
+        Ok(b) => b,
+        Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
+    };
+    let resp = reload(platform.clone(), vec![app.clone()]).await;
+    if resp.status() != StatusCode::OK {
+        crate::managed::restore_secrets(&platform.data_dir, &app, before);
     }
     resp
 }
