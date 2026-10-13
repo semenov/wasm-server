@@ -4,6 +4,7 @@
 //! |---|---|---|---|
 //! | `/_platform/` | GET | any | usage and billing dashboard |
 //! | `billing`, `stats`, `jobs` | GET | any | JSON (a tenant sees its own apps) |
+//! | `whoami` | GET | any | `{"role": "admin" \| "tenant" \| "anonymous"}`: checks a token |
 //! | `apps/NAME` | PUT | owner | upload a new component, then reload |
 //! | `apps/NAME/deploy` | POST | admin | create or update an app with its settings (`managed.rs`) |
 //! | `apps/NAME/secrets` | GET, PUT | admin | a deployed app's secret names; set or remove secrets |
@@ -144,6 +145,14 @@ async fn route(platform: Arc<Platform>, req: Request<Incoming>, path: &str, who:
             json(StatusCode::OK, platform.stats.to_json(&names, &|name| who.sees(&platform, name)))
         }
         (&Method::GET, ["jobs"]) => json(StatusCode::OK, jobs_json(&platform, &who).await),
+        (&Method::GET, ["whoami"]) => {
+            let role = match &who {
+                Principal::Admin => serde_json::json!({ "role": "admin" }),
+                Principal::Tenant(t) => serde_json::json!({ "role": "tenant", "tenant": t }),
+                Principal::Anonymous => serde_json::json!({ "role": "anonymous" }),
+            };
+            json(StatusCode::OK, role.to_string())
+        }
         (&Method::POST, ["reload"]) if who == Principal::Admin => reload(platform, Vec::new()).await,
         (&Method::POST, ["reload"]) => admin_only(),
         (_, ["apps", app, ..]) if !who.owns(&platform, app) => {
