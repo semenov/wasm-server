@@ -1,0 +1,53 @@
+# A release: push a tag (git tag v0.1.0 && git push origin v0.1.0). Builds
+# the server for Linux on x86_64 and aarch64 and publishes the binaries
+# (gzipped), their checksums and install.sh, which downloads them.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p wasm-server
+      - run: |
+          strip target/release/wasm-server
+          ./target/release/wasm-server --help > /dev/null
+          gzip -9 -c target/release/wasm-server > wasm-server-linux-${{ matrix.arch }}.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: wasm-server-linux-${{ matrix.arch }}.gz
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - run: sha256sum wasm-server-linux-*.gz > SHA256SUMS
+      - run: |
+          gh release create "$GITHUB_REF_NAME" wasm-server-linux-*.gz SHA256SUMS install.sh \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Install on a Linux server: \`plumb server add root@HOST\`, or by hand: \`curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install.sh | sh -s -- --domain example.com\`"
+        env:
+          GH_TOKEN: ${{ github.token }}

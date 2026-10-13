@@ -46,6 +46,8 @@ pub struct TlsOpts {
     pub http_listen: SocketAddr,
     /// The HTTPS port, for redirects.
     pub https_port: u16,
+    /// The server's own domain, certified besides the apps'.
+    pub server_name: Option<String>,
 }
 
 struct Cert {
@@ -183,6 +185,7 @@ async fn manage(platform: Arc<Platform>, certs: Arc<Certs>, opts: TlsOpts) {
     loop {
         let deployment = &platform.current().deployment;
         let mut domains: Vec<String> = deployment.apps.values().flat_map(|a| a.domains.iter()).chain(deployment.sites.values().flat_map(|s| s.domains.iter())).map(|d| d.to_ascii_lowercase()).collect();
+        domains.extend(opts.server_name.clone());
         domains.sort();
         domains.dedup();
         for domain in domains.iter().filter(|d| certifiable(d)) {

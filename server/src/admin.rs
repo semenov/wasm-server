@@ -485,7 +485,7 @@ async fn activate(platform: Arc<Platform>, project: String, release: crate::mana
         notes.push(format!("running `after` in the background: {} (plumb migrations shows how they went)", after.join(", ")));
         crate::migrations::spawn_after(platform.clone(), project.clone(), release);
     }
-    json(StatusCode::OK, serde_json::json!({ "project": project, "release": id, "previous": previous, "unchanged": unchanged, "notes": notes }).to_string())
+    json(StatusCode::OK, serde_json::json!({ "project": project, "release": id, "previous": previous, "unchanged": unchanged, "notes": notes, "apps_domain": crate::managed::APPS_DOMAIN.get() }).to_string())
 }
 
 /// `{"release": {...}, "note": "..."}`: a release whose parts are in the

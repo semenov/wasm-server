@@ -110,6 +110,21 @@ impl Release {
     }
 }
 
+/// `--apps-domain`: every project also answers at PROJECT.DOMAIN.
+pub static APPS_DOMAIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// A project's domains: its own, and PROJECT.APPS_DOMAIN.
+fn domains_of(project: &str, s: &Settings) -> Vec<String> {
+    let mut d = s.domains.clone();
+    if let Some(base) = APPS_DOMAIN.get() {
+        let own = format!("{project}.{base}");
+        if !d.contains(&own) {
+            d.push(own);
+        }
+    }
+    d
+}
+
 pub fn root(data_dir: &Path) -> PathBuf {
     data_dir.join("apps")
 }
@@ -193,7 +208,7 @@ pub fn add_to(deployment: &mut Deployment, data_dir: &Path) -> Result<()> {
             let Some(hash) = release.components.get(app) else {
                 // files only
                 let Some(static_dir) = static_dir else { continue };
-                let site = crate::deployment::SiteSpec { static_dir, domains: settings.domains.clone(), path: s.path.clone(), spa: s.spa };
+                let site = crate::deployment::SiteSpec { static_dir, domains: domains_of(&project, settings), path: s.path.clone(), spa: s.spa };
                 deployment.sites.insert(name, site);
                 continue;
             };
@@ -203,7 +218,7 @@ pub fn add_to(deployment: &mut Deployment, data_dir: &Path) -> Result<()> {
                 static_dir,
                 databases: settings.databases.iter().map(|d| format!("{project}/{d}")).collect(),
                 db_aliases: settings.databases.iter().map(|d| (d.clone(), format!("{project}/{d}"))).collect(),
-                domains: settings.domains.clone(),
+                domains: domains_of(&project, settings),
                 path: s.path.clone(),
                 outbound: s.outbound.clone().or_else(|| settings.outbound.clone()),
                 websocket: s.websocket.clone(),

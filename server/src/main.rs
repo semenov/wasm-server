@@ -196,6 +196,16 @@ enum Command {
         /// Port 80 for --https.
         #[arg(long, default_value = "0.0.0.0:80")]
         http_listen: SocketAddr,
+        /// The server's own domain (`apps.example.com`): with --https it
+        /// gets a certificate too, so `plumb login https://NAME` reaches
+        /// /_platform/ securely.
+        #[arg(long, env = "WASM_SERVER_NAME")]
+        server_name: Option<String>,
+        /// Every deployed project also answers at PROJECT.DOMAIN
+        /// (`shop.example.com`): one wildcard DNS record (`*.example.com`)
+        /// covers them all; `1-2-3-4.sslip.io` needs no DNS at all.
+        #[arg(long, env = "WASM_SERVER_APPS_DOMAIN")]
+        apps_domain: Option<String>,
         /// Contact address for Let's Encrypt (expiry warnings).
         #[arg(long)]
         acme_email: Option<String>,
@@ -379,6 +389,8 @@ fn main() -> Result<()> {
             autoscale_region,
             autoscale_fast,
             https,
+            server_name,
+            apps_domain,
             http_listen,
             acme_email,
             acme_directory,
@@ -419,6 +431,9 @@ fn main() -> Result<()> {
                 })?),
             };
             db::MANAGED_DIR.set(data_dir.join("apps")).ok();
+            if let Some(d) = apps_domain.map(|d| d.trim().trim_start_matches("*.").to_ascii_lowercase()).filter(|d| !d.is_empty()) {
+                managed::APPS_DOMAIN.set(d).ok();
+            }
             logs::DIR.set(data_dir.join("logs")).ok();
             let max_memory = max_memory_mb << 20;
             let engine = engine::build(&engine_args.opts(max_memory))?;
@@ -520,6 +535,7 @@ fn main() -> Result<()> {
                     ca_file: acme_ca_file,
                     http_listen,
                     https_port: listen.port(),
+                    server_name: server_name.map(|n| n.trim().to_ascii_lowercase()).filter(|n| !n.is_empty()),
                 };
                 Some(tls::start(platform.clone(), opts)?)
             } else {

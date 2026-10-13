@@ -554,6 +554,41 @@ down to `--autoscale-min` (0); 3 minutes between decisions.
   The droplets must reach the cluster port, and the primary their port
   8080, on a private network. Not tried against the real API yet.
 
+## Installing on a server
+
+On any Debian or Ubuntu server you can `ssh` into as root (or with
+passwordless sudo), from your computer:
+
+```sh
+plumb server add root@203.0.113.10 --domain example.com
+```
+
+- **What it does:** runs `install.sh` there over SSH (your keys and
+  `~/.ssh/config`), keeps the server's admin token on your computer, and
+  makes the server the default for `plumb deploy`.
+- **What it installs:**
+  - the newest release binary (checked against its SHA-256);
+  - a `wasm-server` user;
+  - the data in `/var/lib/wasm-server`;
+  - the settings and the token in `/etc/wasm-server/env`;
+  - a hardened systemd service on ports 80 and 443 with HTTPS.
+- **Domains:** every project answers at `PROJECT.example.com` and the
+  server's API at `platform.example.com`, all with certificates from Let's
+  Encrypt. One DNS record covers it: `*.example.com → the server's address`.
+  Without `--domain`, the names are `PROJECT.203-0-113-10.sslip.io`, which
+  need no DNS at all.
+- **By hand, as root:** `curl -fsSL
+  https://github.com/semenov/wasm-server/releases/latest/download/install.sh
+  | sh -s -- --domain example.com`.
+- **Running it again** upgrades the binary and keeps the data, the token and
+  the settings.
+- **Releases:** pushing a tag `vX.Y.Z` builds the binaries for x86_64 and
+  aarch64 Linux (`.github/workflows/release.yml`).
+- **Tested** in a Debian 12 container with systemd and sshd, with Pebble as
+  the CA: install, upgrade (the token kept), a certificate for the server's
+  name, redirects from http, `plumb deploy` of a project with migrations,
+  and its pages over HTTPS.
+
 ## HTTPS
 
 `--https` serves `--listen` over TLS with certificates from Let's Encrypt for
