@@ -167,7 +167,8 @@ pub fn build(
         if let Some(dir) = &spec.static_dir {
             statics.push((name.clone(), load_site(name, dir)?));
         }
-        domains.extend(spec.domains.iter().map(|d| (d.clone(), name.clone())));
+        let path = spec.path.clone().unwrap_or_else(|| "/".into());
+        domains.extend(spec.domains.iter().map(|d| (d.clone(), path.clone(), name.clone())));
         if let Some(n) = spec.credits {
             credits.insert(name.clone(), n);
         }
@@ -175,7 +176,7 @@ pub fn build(
     }
     for (name, spec) in &deployment.sites {
         statics.push((name.clone(), load_site(name, &spec.static_dir)?));
-        domains.extend(spec.domains.iter().map(|d| (d.clone(), name.clone())));
+        domains.extend(spec.domains.iter().map(|d| (d.clone(), "/".to_string(), name.clone())));
         if let Some(n) = spec.credits {
             credits.insert(name.clone(), n);
         }

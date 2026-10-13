@@ -429,25 +429,37 @@ browser ── short.localhost ──► static site (host)
 - **Rate limit:** at most 5 messages per second per connection, counted with
   the cache's `incr`.
 
-## Deploying apps over the API (`plumb deploy`)
+## Deploying projects over the API (`plumb deploy`)
 
-Besides the apps in the deployment file, the admin can create apps over
-`/_platform/` (`server/src/managed.rs`), which is what `plumb deploy` does:
+Besides the apps in the deployment file, the admin can create projects over
+`/_platform/` (`server/src/managed.rs`), which is what `plumb deploy` does. A
+project is one or more apps sharing domains, databases and secrets:
 
-- **`POST /_platform/apps/NAME/deploy`** with JSON `{"settings": {"domains":
-  [...], "databases": ["main"], "outbound": [...]}, "schema": {"main": "create
-  table if not exists ..."}, "component": "<base64 .wasm>"}` creates or
-  replaces the app without downtime. The schema runs first; if the new
-  version doesn't load, the previous one stays.
-- **Databases** are the app's own SQLite files, which its code opens by its
-  own names (`db.open("main")`); they are backed up and billed like the
-  others.
-- **`PUT /_platform/apps/NAME/secrets`** with `{"KEY": "value", "OLD": null}`
-  sets or removes environment variables, kept owner-only on disk; `GET`
-  lists their names.
-- Everything lives in `<data-dir>/apps/NAME/` (`app.toml`, `app.cwasm`,
-  `db/`, `secrets.json`), so a restart brings the apps back. A server can
-  start with no apps at all and wait for its first deploy.
+- **`POST /_platform/projects/NAME/deploy`** with JSON `{"settings":
+  {"domains": [...], "databases": ["main"], "outbound": [...], "apps":
+  {"web": {}, "api": {"path": "/api"}}}, "schema": {"main": "create table if
+  not exists ..."}, "components": {"web": "<base64 .wasm>", "api": "..."}}`
+  creates or replaces the whole project without downtime. The schema runs
+  first; then all its apps switch together, or, if one doesn't load (or
+  takes a domain and path another app has), none of them do.
+- **Paths:** apps of a project share its domains, each taking a `path`
+  (`/api`: `/api` and below, not `/apix`); the longest matching path wins,
+  and an app without one takes the rest. The app sees the whole path.
+- **Names:** an app named like its project is `NAME` to the server; the
+  others are `NAME.APP` (`shop.api`), in logs, metrics and the API.
+  `metrics?project=NAME` adds a project's apps together.
+- **Databases** are the project's own SQLite files, which its apps open by
+  their own names (`db.open("main")` is `shop/main`); they are backed up
+  and billed like the others.
+- **`PUT /_platform/projects/NAME/secrets`** with `{"KEY": "value", "OLD":
+  null}` sets or removes environment variables of all its apps, kept
+  owner-only on disk; `GET` lists their names.
+- Everything lives in `<data-dir>/apps/NAME/` (`project.toml`,
+  `code/APP.cwasm`, `db/`, `secrets.json`), so a restart brings the projects
+  back. A server can start with none and wait for its first deploy. (An
+  `app.toml` with `app.cwasm` there, from before projects, is read as a
+  project of one app; `apps/NAME/deploy` and `apps/NAME/secrets` are the
+  same endpoints.)
 
 ## Logs and request metrics
 

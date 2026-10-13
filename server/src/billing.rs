@@ -389,11 +389,14 @@ pub fn storage_owners(platform: &Platform) -> Vec<(String, PathBuf)> {
             out.push((owner.clone(), PathBuf::from(path)));
         }
     }
-    // deployed apps' own databases: `app/name`
+    // deployed projects' own databases (`project/name`): counted for the
+    // project's first app
     for (name, path) in crate::managed::databases(&platform.data_dir) {
-        if let Some((app, _)) = name.split_once('/') {
-            if names.iter().any(|n| n == app) {
-                out.push((app.to_string(), path));
+        if let Some((project, _)) = name.split_once('/') {
+            let mut apps: Vec<&String> = names.iter().filter(|n| crate::managed::project_of(n) == project && current.routes.app(n).is_some()).collect();
+            apps.sort();
+            if let Some(app) = apps.first() {
+                out.push(((*app).clone(), path));
             }
         }
     }

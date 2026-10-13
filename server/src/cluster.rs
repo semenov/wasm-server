@@ -56,6 +56,8 @@ pub struct AppState {
     /// SHA-256 of the component file, to fetch it when it changes.
     pub hash: String,
     pub domains: Vec<String>,
+    #[serde(default)]
+    pub path: Option<String>,
     pub outbound: Option<Vec<String>>,
     pub websocket: Option<String>,
     pub env: BTreeMap<String, String>,
@@ -368,6 +370,7 @@ pub fn load_deployment(data_dir: &std::path::Path) -> Result<crate::deployment::
                 databases: app.databases.clone(),
                 db_aliases: app.db_aliases.clone(),
                 domains: app.domains.clone(),
+                path: app.path.clone(),
                 env: app.env.clone(),
                 outbound: app.outbound.clone(),
                 websocket: app.websocket.clone(),
@@ -520,6 +523,7 @@ impl Primary {
                 name: name.clone(),
                 hash: self.hash_of(&spec.component),
                 domains: spec.domains.clone(),
+                path: spec.path.clone(),
                 outbound: spec.outbound.clone(),
                 websocket: spec.websocket.clone(),
                 env: spec.env.clone(),

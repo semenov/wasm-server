@@ -80,6 +80,10 @@ pub struct AppSpec {
     pub static_dir: Option<PathBuf>,
     #[serde(default)]
     pub domains: Vec<String>,
+    /// The part of its domains it serves (`/api`: `/api` and below); not
+    /// set: all of it. Several apps share a domain this way, the longest
+    /// matching path winning; each sees the whole path.
+    pub path: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     /// Path where WebSocket upgrades go to this app.
@@ -234,14 +238,31 @@ impl Deployment {
                 bail!("tenant {name:?}: token_sha256 must be 64 hex characters (wasm-server hash-token TOKEN)");
             }
         }
-        let all_domains = self.apps.iter().map(|(n, a)| (n, &a.domains)).chain(self.sites.iter().map(|(n, s)| (n, &s.domains)));
-        for (name, list) in all_domains {
+        for (name, app) in &self.apps {
+            if let Some(path) = &app.path {
+                if !valid_path(path) {
+                    bail!("app {name:?}: path {path:?} must start with / and not end with one (\"/api\")");
+                }
+            }
+        }
+        let all_domains = self
+            .apps
+            .iter()
+            .map(|(n, a)| (n, &a.domains, a.path.as_deref().unwrap_or("/")))
+            .chain(self.sites.iter().map(|(n, s)| (n, &s.domains, "/")));
+        for (name, list, path) in all_domains {
             for domain in list {
-                if let Some(other) = domains.insert(domain.to_ascii_lowercase(), name.clone()) {
-                    bail!("domain {domain:?} is assigned to both {other:?} and {name:?}");
+                if let Some(other) = domains.insert((domain.to_ascii_lowercase(), path.to_string()), name.clone()) {
+                    let place = if path == "/" { domain.clone() } else { format!("{domain}{path}") };
+                    bail!("{place:?} is assigned to both {other:?} and {name:?}");
                 }
             }
         }
         Ok(())
     }
+}
+
+/// An app's `path`: `/`, or `/a/b` without a trailing `/`.
+pub fn valid_path(path: &str) -> bool {
+    path == "/" || (path.starts_with('/') && !path.ends_with('/') && !path.contains("//") && !path.contains(['?', '#', ' ']))
 }

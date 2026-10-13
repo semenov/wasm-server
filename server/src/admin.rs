@@ -5,12 +5,12 @@
 //! | `/_platform/` | GET | any | usage and billing dashboard |
 //! | `requests` | GET | any | charts of an app's requests, times and errors (from `metrics`) |
 //! | `billing`, `stats`, `jobs` | GET | any | JSON (a tenant sees its own apps) |
-//! | `metrics?app=NAME&range=24h` | GET | any (a tenant: its apps) | requests, errors, percentiles and where the time went, by minute |
+//! | `metrics?app=NAME&range=24h` | GET | any (a tenant: its apps) | requests, errors, percentiles and where the time went, by minute (`project=NAME`: all its apps together) |
 //! | `apps/NAME/logs[?lines=N\|since=OFFSET]` | GET | owner | the app's log (text; `x-log-offset` for following it) |
 //! | `whoami` | GET | any | `{"role": "admin" \| "tenant" \| "anonymous"}`: checks a token |
 //! | `apps/NAME` | PUT | owner | upload a new component, then reload |
-//! | `apps/NAME/deploy` | POST | admin | create or update an app with its settings (`managed.rs`) |
-//! | `apps/NAME/secrets` | GET, PUT | admin | a deployed app's secret names; set or remove secrets |
+//! | `projects/NAME/deploy` | POST | admin | create or update a project: its apps with their settings (`managed.rs`) |
+//! | `projects/NAME/secrets` | GET, PUT | admin | a deployed project's secret names; set or remove secrets |
 //! | `apps/NAME/versions` | GET | owner | saved previous versions |
 //! | `apps/NAME/rollback[?to=ID]` | POST | owner | back to the previous (or given) version |
 //! | `reload` | POST | admin | re-read the deployment and switch to it |
@@ -151,12 +151,16 @@ async fn route(platform: Arc<Platform>, req: Request<Incoming>, path: &str, who:
         (&Method::GET, ["jobs"]) => json(StatusCode::OK, jobs_json(&platform, &who).await),
         (&Method::GET, ["metrics"]) => {
             let arg = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(&format!("{k}="))).map(|v| v.to_string());
-            let Some(app) = arg("app") else { return error(StatusCode::BAD_REQUEST, "metrics?app=NAME&range=1h|6h|24h|7d|30d") };
+            let (app, project) = match (arg("app"), arg("project")) {
+                (Some(app), None) => (app, false),
+                (None, Some(project)) => (project, true),
+                _ => return error(StatusCode::BAD_REQUEST, "metrics?app=NAME (or project=NAME)&range=1h|6h|24h|7d|30d"),
+            };
             let range = arg("range").unwrap_or_else(|| "24h".into());
             if !who.sees(&platform, &app) {
                 return error(StatusCode::FORBIDDEN, &format!("not allowed to see {app:?}"));
             }
-            match crate::metrics::METRICS.get().and_then(|m| m.query(&app, &range)) {
+            match crate::metrics::METRICS.get().and_then(|m| m.query(&app, project, &range)) {
                 Some(body) => json(StatusCode::OK, body),
                 None => error(StatusCode::BAD_REQUEST, "range must be 1h, 6h, 24h, 7d or 30d"),
             }
@@ -192,13 +196,15 @@ async fn route(platform: Arc<Platform>, req: Request<Incoming>, path: &str, who:
             error(StatusCode::FORBIDDEN, &format!("not allowed to manage {app:?}"))
         }
         (&Method::PUT, ["apps", app]) => deploy(platform, req, app.to_string()).await,
-        (&Method::POST, ["apps", app, "deploy"]) if who == Principal::Admin => deploy_managed(platform, req, app.to_string()).await,
-        (&Method::GET, ["apps", app, "secrets"]) if who == Principal::Admin => match crate::managed::secret_names(&platform.data_dir, app) {
+        // projects deployed over the API (`apps/NAME/...`: the same, from
+        // before there were projects)
+        (&Method::POST, ["projects" | "apps", project, "deploy"]) if who == Principal::Admin => deploy_managed(platform, req, project.to_string()).await,
+        (&Method::GET, ["projects" | "apps", project, "secrets"]) if who == Principal::Admin => match crate::managed::secret_names(&platform.data_dir, project) {
             Ok(names) => json(StatusCode::OK, serde_json::json!({ "names": names }).to_string()),
             Err(e) => error(StatusCode::NOT_FOUND, &e.to_string()),
         },
-        (&Method::PUT, ["apps", app, "secrets"]) if who == Principal::Admin => set_secrets(platform, req, app.to_string()).await,
-        (_, ["apps", _, "deploy" | "secrets"]) => admin_only(),
+        (&Method::PUT, ["projects" | "apps", project, "secrets"]) if who == Principal::Admin => set_secrets(platform, req, project.to_string()).await,
+        (_, ["apps", _, "deploy" | "secrets"] | ["projects", ..]) => admin_only(),
         (&Method::GET, ["apps", app, "versions"]) => list_versions(&platform, app),
         (&Method::GET, ["apps", app, "logs"]) => {
             let arg = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(&format!("{k}="))).and_then(|v| v.parse::<u64>().ok());
@@ -310,8 +316,9 @@ async fn deploy(platform: Arc<Platform>, req: Request<Incoming>, app: String) ->
     resp
 }
 
-/// `plumb deploy`: an app with its settings and schema, created or replaced
-/// without downtime; if the new version doesn't load, the old one stays.
+/// `plumb deploy`: a project's apps with their settings and schema, created
+/// or replaced together without downtime; if the new version doesn't load,
+/// the old one stays.
 async fn deploy_managed(platform: Arc<Platform>, req: Request<Incoming>, app: String) -> Response<HyperOutgoingBody> {
     let bytes = match Limited::new(req.into_body(), MAX_UPLOAD * 2).collect().await {
         Ok(collected) => collected.to_bytes(),
@@ -340,7 +347,9 @@ async fn deploy_managed(platform: Arc<Platform>, req: Request<Incoming>, app: St
         Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
     let resp = reload(platform, vec![app]).await;
-    if resp.status() != StatusCode::OK {
+    if resp.status() == StatusCode::OK {
+        staged.commit();
+    } else {
         staged.restore();
     }
     resp

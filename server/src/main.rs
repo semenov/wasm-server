@@ -434,7 +434,7 @@ fn main() -> Result<()> {
             logs::DIR.set(data_dir.join("logs")).ok();
             let deployment = source.load(&data_dir)?;
             if deployment.apps.is_empty() && deployment.sites.is_empty() {
-                eprintln!("note: no apps yet; deploy one (plumb deploy, or PUT /_platform/apps/NAME/deploy)");
+                eprintln!("note: no apps yet; deploy one (plumb deploy, or POST /_platform/projects/NAME/deploy)");
             }
             eprintln!("deployment: {}", source.describe());
 

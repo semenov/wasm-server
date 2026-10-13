@@ -191,15 +191,17 @@ pub fn range_steps(range: &str) -> Option<(i64, i64)> {
 impl Metrics {
     /// `{"app", "range", "step", "summary": {...}, "points": [{"t", ...}]}`;
     /// points without activity are left out.
-    pub fn query(&self, app: &str, range: &str) -> Option<String> {
+    /// An app's minutes; with `project`, those of all the project's apps
+    /// (`shop`, `shop.api`, ...) added together.
+    pub fn query(&self, app: &str, project: bool, range: &str) -> Option<String> {
         let (span, step) = range_steps(range)?;
         let now = unix_now();
         let from = (now - span) / step * step;
         let conn = self.conn.lock().unwrap();
         let cols: String = COLUMNS.iter().map(|(c, _)| format!("{c}, ")).collect();
-        let mut stmt = conn.prepare(&format!("SELECT minute, {cols}egress_bytes, latency FROM minutes WHERE app = ? AND minute >= ? ORDER BY minute")).ok()?;
+        let mut stmt = conn.prepare(&format!("SELECT minute, {cols}egress_bytes, latency FROM minutes WHERE (app = ?1 OR (?3 AND app LIKE ?1 || '.%')) AND minute >= ?2 ORDER BY minute")).ok()?;
         let rows = stmt
-            .query_map(params![app, from], |r| {
+            .query_map(params![app, from, project], |r| {
                 let mut s = Sums::default();
                 for i in 0..COLUMNS.len() {
                     s.v[i] = r.get(1 + i)?;
