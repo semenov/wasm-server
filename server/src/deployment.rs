@@ -93,6 +93,10 @@ pub struct AppSpec {
     /// For apps deployed over the API: their project (its files).
     #[serde(skip)]
     pub project: Option<String>,
+    /// For apps deployed over the API: the hash of their `.wasm` in the
+    /// store, which cluster workers fetch and compile for themselves.
+    #[serde(skip)]
+    pub source: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]

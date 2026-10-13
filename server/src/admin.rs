@@ -9,7 +9,13 @@
 //! | `apps/NAME/logs[?lines=N\|since=OFFSET]` | GET | owner | the app's log (text; `x-log-offset` for following it) |
 //! | `whoami` | GET | any | `{"role": "admin" \| "anonymous"}`: checks a token |
 //! | `apps/NAME` | PUT | owner | upload a new component, then reload |
-//! | `projects/NAME/deploy` | POST | admin | create or update a project: its apps with their settings (`managed.rs`) |
+//! | `blobs/missing` | POST | admin | `{"hashes": [...]}` → the ones the store lacks (`store.rs`) |
+//! | `blobs` | POST, GET `blobs/HASH` | admin | upload parts (`HASH LENGTH\n` + bytes, repeated); read one |
+//! | `projects/NAME/releases` | POST | admin | `{"release": {...}, "note"}`: run a release whose parts are stored (`managed.rs`) |
+//! | `projects/NAME/releases` | GET | any | the releases it ran, newest first, and the current one |
+//! | `projects/NAME/rollback[?to=ID]` | POST | admin | back to the previous (or given) release |
+//! | `projects/NAME/deploy` | POST | admin | a release with every part inline (base64) |
+//! | `releases/ID` | GET | any | a release's manifest |
 //! | `projects/NAME/secrets` | GET, PUT | admin | a deployed project's secret names; set or remove secrets |
 //! | `apps/NAME/versions` | GET | owner | saved previous versions |
 //! | `apps/NAME/rollback[?to=ID]` | POST | owner | back to the previous (or given) version |
@@ -163,10 +169,55 @@ async fn route(platform: Arc<Platform>, req: Request<Incoming>, path: &str, who:
         (_, ["apps", app, ..]) if who != Principal::Admin => {
             error(StatusCode::FORBIDDEN, &format!("not allowed to manage {app:?}"))
         }
+        // a project's apps change only with a release of the whole project
+        (&Method::PUT | &Method::POST, ["apps", app] | ["apps", app, "rollback"]) if platform.current().deployment.apps.get(*app).is_some_and(|s| s.project.is_some()) => {
+            let project = crate::managed::project_of(app);
+            error(StatusCode::CONFLICT, &format!("{app:?} is an app of project {project:?}: deploy the project (plumb deploy), or roll it back with POST /_platform/projects/{project}/rollback"))
+        }
         (&Method::PUT, ["apps", app]) => deploy(platform, req, app.to_string()).await,
         // projects deployed over the API (`apps/NAME/...`: the same, from
         // before there were projects)
         (&Method::POST, ["projects" | "apps", project, "deploy"]) if who == Principal::Admin => deploy_managed(platform, req, project.to_string()).await,
+        (&Method::POST, ["projects", project, "releases"]) if who == Principal::Admin => deploy_release(platform, req, project.to_string()).await,
+        (&Method::GET, ["projects", project, "releases"]) => list_releases(&platform, project),
+        (&Method::POST, ["projects", project, "rollback"]) if who == Principal::Admin => {
+            let to = query.split('&').find_map(|kv| kv.strip_prefix("to=")).map(str::to_string);
+            rollback_project(platform, project.to_string(), to).await
+        }
+        // the store: which parts a server lacks, uploading them, reading them
+        (&Method::POST, ["blobs", "missing"]) if who == Principal::Admin => {
+            let bytes = match body_bytes(req, 16 << 20).await {
+                Ok(b) => b,
+                Err(resp) => return resp,
+            };
+            let hashes: Vec<String> = serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|v| v.get("hashes").and_then(|h| h.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()))
+                .unwrap_or_default();
+            let missing: Vec<&String> = hashes.iter().filter(|h| !crate::store::has_blob(&platform.data_dir, h)).collect();
+            json(StatusCode::OK, serde_json::json!({ "missing": missing }).to_string())
+        }
+        (&Method::POST, ["blobs"]) if who == Principal::Admin => {
+            let bytes = match body_bytes(req, 1 << 30).await {
+                Ok(b) => b,
+                Err(resp) => return resp,
+            };
+            let data_dir = platform.data_dir.clone();
+            match tokio::task::spawn_blocking(move || crate::store::put_batch(&data_dir, &bytes)).await {
+                Ok(Ok(n)) => json(StatusCode::OK, serde_json::json!({ "stored": n }).to_string()),
+                Ok(Err(e)) => error(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
+                Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+            }
+        }
+        (&Method::GET, ["blobs", hash]) if who == Principal::Admin => match crate::store::read_blob(&platform.data_dir, hash) {
+            Ok(b) => respond(StatusCode::OK, "application/octet-stream", b),
+            Err(e) => error(StatusCode::NOT_FOUND, &e.to_string()),
+        },
+        (&Method::GET, ["releases", id]) => match crate::store::read_release(&platform.data_dir, id) {
+            Ok(b) => json(StatusCode::OK, b),
+            Err(e) => error(StatusCode::NOT_FOUND, &e.to_string()),
+        },
+        (_, ["blobs", ..]) => admin_only(),
         (&Method::GET, ["projects" | "apps", project, "secrets"]) if who == Principal::Admin => match crate::managed::secret_names(&platform.data_dir, project) {
             Ok(names) => json(StatusCode::OK, serde_json::json!({ "names": names }).to_string()),
             Err(e) => error(StatusCode::NOT_FOUND, &e.to_string()),
@@ -283,43 +334,123 @@ async fn deploy(platform: Arc<Platform>, req: Request<Incoming>, app: String) ->
     resp
 }
 
-/// `plumb deploy`: a project's apps with their settings and schema, created
-/// or replaced together without downtime; if the new version doesn't load,
-/// the old one stays.
-async fn deploy_managed(platform: Arc<Platform>, req: Request<Incoming>, app: String) -> Response<HyperOutgoingBody> {
-    let bytes = match Limited::new(req.into_body(), MAX_UPLOAD * 2).collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(e) => return error(StatusCode::PAYLOAD_TOO_LARGE, &e.to_string()),
+/// Names of the deployment file's apps and sites, which projects can't take.
+fn fixed_names(platform: &Platform) -> Vec<String> {
+    let current = platform.current();
+    let store = platform.data_dir.join("store");
+    current
+        .deployment
+        .apps
+        .iter()
+        .filter(|(_, spec)| spec.project.is_none())
+        .map(|(n, _)| n.clone())
+        .chain(current.deployment.sites.iter().filter(|(_, spec)| !spec.static_dir.starts_with(&store)).map(|(n, _)| n.clone()))
+        .collect()
+}
+
+async fn body_bytes(req: Request<Incoming>, limit: usize) -> Result<Bytes, Response<HyperOutgoingBody>> {
+    match Limited::new(req.into_body(), limit).collect().await {
+        Ok(collected) => Ok(collected.to_bytes()),
+        Err(e) => Err(error(StatusCode::PAYLOAD_TOO_LARGE, &e.to_string())),
+    }
+}
+
+/// Makes `release` the project's: checks it, compiles and lays out what's
+/// new, applies its schema, points the project at it and reloads; if that
+/// fails, the project goes back to the release it ran.
+async fn activate(platform: Arc<Platform>, project: String, release: crate::managed::Release, note: String) -> Response<HyperOutgoingBody> {
+    let taken = fixed_names(&platform);
+    let (data_dir, p) = (platform.data_dir.clone(), project.clone());
+    let prepared = tokio::task::spawn_blocking(move || -> Result<(String, Option<String>)> {
+        crate::managed::check(&data_dir, &p, &release, &taken)?;
+        let id = crate::managed::put_release(&data_dir, &release)?;
+        crate::managed::prepare(&data_dir, &p, &release)?;
+        let previous = crate::managed::current(&data_dir, &p);
+        crate::managed::set_current(&data_dir, &p, Some(&id))?;
+        Ok((id, previous))
+    })
+    .await;
+    let (id, previous) = match prepared {
+        Ok(Ok(x)) => x,
+        Ok(Err(e)) => return error(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
+        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    let resp = reload(platform.clone(), vec![project.clone()]).await;
+    let data_dir = platform.data_dir.clone();
+    if resp.status() != StatusCode::OK {
+        let _ = crate::managed::set_current(&data_dir, &project, previous.as_deref());
+        return resp;
+    }
+    let unchanged = previous.as_deref() == Some(id.as_str());
+    if !unchanged {
+        let (p, i) = (project.clone(), id.clone());
+        let _ = tokio::task::spawn_blocking(move || crate::managed::record(&data_dir, &p, &i, &note)).await;
+    }
+    json(StatusCode::OK, serde_json::json!({ "project": project, "release": id, "previous": previous, "unchanged": unchanged }).to_string())
+}
+
+/// `{"release": {...}, "note": "..."}`: a release whose parts are in the
+/// store (`blobs/missing`, then `blobs`).
+async fn deploy_release(platform: Arc<Platform>, req: Request<Incoming>, project: String) -> Response<HyperOutgoingBody> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Body {
+        release: crate::managed::Release,
+        #[serde(default)]
+        note: String,
+    }
+    let bytes = match body_bytes(req, 16 << 20).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    match serde_json::from_slice::<Body>(&bytes) {
+        Ok(b) => activate(platform, project, b.release, b.note).await,
+        Err(e) => error(StatusCode::BAD_REQUEST, &format!("the release: {e}")),
+    }
+}
+
+/// The same with every part inline (base64): turned into blobs first.
+async fn deploy_managed(platform: Arc<Platform>, req: Request<Incoming>, project: String) -> Response<HyperOutgoingBody> {
+    let bytes = match body_bytes(req, MAX_UPLOAD * 2).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
     };
     let upload: crate::managed::Upload = match serde_json::from_slice(&bytes) {
         Ok(u) => u,
         Err(e) => return error(StatusCode::BAD_REQUEST, &format!("the deploy request: {e}")),
     };
-    let current = platform.current();
-    let root = crate::managed::root(&platform.data_dir);
-    let fixed: Vec<String> = current
-        .deployment
-        .apps
-        .iter()
-        .filter(|(_, spec)| !spec.component.starts_with(&root))
-        .map(|(n, _)| n.clone())
-        .chain(current.deployment.sites.iter().filter(|(_, spec)| !spec.static_dir.starts_with(&root)).map(|(n, _)| n.clone()))
-        .collect();
-    drop(current);
-    let engine = platform.engine().clone();
-    let (data_dir, name) = (platform.data_dir.clone(), app.clone());
-    let staged = match tokio::task::spawn_blocking(move || crate::managed::stage(&engine, &data_dir, &name, upload, &fixed)).await {
-        Ok(Ok(staged)) => staged,
-        Ok(Err(e)) => return error(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
-        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
-    };
-    let resp = reload(platform, vec![app]).await;
-    if resp.status() == StatusCode::OK {
-        staged.commit();
-    } else {
-        staged.restore();
+    let (data_dir, p) = (platform.data_dir.clone(), project.clone());
+    match tokio::task::spawn_blocking(move || upload.into_release(&data_dir, &p)).await {
+        Ok(Ok(release)) => activate(platform, project, release, String::new()).await,
+        Ok(Err(e)) => error(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
-    resp
+}
+
+/// Back to an earlier release: the given one, or the last one before the
+/// current that differs from it.
+async fn rollback_project(platform: Arc<Platform>, project: String, to: Option<String>) -> Response<HyperOutgoingBody> {
+    let data_dir = platform.data_dir.clone();
+    let current = crate::managed::current(&data_dir, &project);
+    let history = crate::managed::history(&data_dir, &project);
+    let target = match to {
+        Some(t) => history.iter().rev().find(|e| e.id.starts_with(&t)).map(|e| e.id.clone()),
+        None => history.iter().rev().map(|e| &e.id).find(|id| Some(*id) != current.as_ref()).cloned(),
+    };
+    let Some(target) = target else {
+        return error(StatusCode::NOT_FOUND, &format!("no earlier release of {project:?} to go back to"));
+    };
+    match crate::managed::load_release(&data_dir, &target) {
+        Ok(release) => activate(platform, project, release, format!("rollback to {}", &target[..12])).await,
+        Err(e) => error(StatusCode::NOT_FOUND, &format!("{e} (old releases' parts are cleaned up after {} newer ones)", 20)),
+    }
+}
+
+fn list_releases(platform: &Platform, project: &str) -> Response<HyperOutgoingBody> {
+    let current = crate::managed::current(&platform.data_dir, project);
+    let mut history = crate::managed::history(&platform.data_dir, project);
+    history.reverse();
+    json(StatusCode::OK, serde_json::json!({ "project": project, "current": current, "releases": history }).to_string())
 }
 
 /// Sets or removes secrets: `{"KEY": "value", "OLD": null}`; then reloads.

@@ -1,30 +1,34 @@
 //! Projects deployed over the API (`plumb deploy`) rather than written into
 //! the deployment file. A project is one or more apps sharing domains,
-//! databases and secrets, deployed together. Each lives in
+//! databases and secrets, deployed together as a *release*: a manifest
+//! naming its settings and, by hash, each app's component, static files and
+//! the schema (the parts are in the store, `store.rs`). In
 //! `<data-dir>/apps/PROJECT/`:
 //!
-//! - `project.toml`: its settings (domains, databases, outbound, and each
-//!   app's path under the domains);
-//! - `code/APP.cwasm`: each app's code, compiled for this server;
-//! - `static/APP/`: each app's static files (a site, or a single-page
-//!   app), served before its code; an app may have only files;
+//! - `current`: the id of the release it runs;
+//! - `history.jsonl`: the releases it ran, newest last, with when and a
+//!   note (the deploy's git commit, say); rollback goes back to any of them;
 //! - `db/DB.db`: its SQLite databases, which its apps know by their own
 //!   names (`db.open("main")` is `shop/main` here);
-//! - `secrets.json` (owner-only): environment variables its apps see.
+//! - `secrets.json` (owner-only): environment variables its apps see (not
+//!   part of releases: rolling back doesn't bring back an old key);
+//! - `files.db`, `files/`: its users' files (`storage.rs`).
 //!
 //! An app named like its project is known to the server by that name
 //! (`notes`), the others as `PROJECT.APP` (`shop.api`): in logs, metrics and
-//! the API. A deploy applies the schema, writes all the new files and
-//! reloads once; if the new version doesn't load, the old files come back.
+//! the API. A deploy checks the release, compiles what's new, applies the
+//! schema, points `current` at it and reloads; if the new version doesn't
+//! load, `current` goes back.
 
 use crate::deployment::{AppSpec, Deployment};
+use crate::store;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use wasmtime::{Result, bail, format_err};
 
-/// A project's settings, as `plumb deploy` sends them.
+/// A project's settings.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -34,6 +38,7 @@ pub struct Settings {
     #[serde(default)]
     pub databases: Vec<String>,
     /// Hosts its apps may call; none: any public host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outbound: Option<Vec<String>>,
     pub apps: BTreeMap<String, AppSettings>,
 }
@@ -42,30 +47,46 @@ pub struct Settings {
 #[serde(deny_unknown_fields)]
 pub struct AppSettings {
     /// The part of the domains it serves (`/api`); none: all of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// Path where WebSocket upgrades go to the app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub websocket: Option<String>,
     /// Replaces the project's `outbound` for this app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outbound: Option<Vec<String>>,
-    /// It has static files (in the deploy's `files`).
-    #[serde(default, rename = "static")]
-    pub has_static: bool,
     /// Without code: a single-page app, `index.html` for every page path.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub spa: bool,
 }
 
-/// `app.toml` of a single app deployed before projects: read as a project
-/// of one app.
-#[derive(Deserialize)]
+/// A release: what a project runs, every part by its hash in the store.
+/// Its id is the SHA-256 of its JSON (as the server writes it).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct OldSettings {
+pub struct Release {
+    pub project: String,
+    pub settings: Settings,
+    /// App → its component (`.wasm`).
     #[serde(default)]
-    domains: Vec<String>,
+    pub components: BTreeMap<String, String>,
+    /// App → its static files: path in the site → content.
     #[serde(default)]
-    databases: Vec<String>,
-    outbound: Option<Vec<String>>,
-    websocket: Option<String>,
+    pub files: BTreeMap<String, BTreeMap<String, String>>,
+    /// Database → SQL run before the release starts (idempotent: `create
+    /// table if not exists ...`).
+    #[serde(default)]
+    pub schema: BTreeMap<String, String>,
+    /// What built it (`plumb 0.1.0`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler: Option<String>,
+}
+
+impl Release {
+    /// Every blob it needs.
+    pub fn blobs(&self) -> impl Iterator<Item = &String> {
+        self.components.values().chain(self.files.values().flat_map(|f| f.values())).chain(self.schema.values())
+    }
 }
 
 pub fn root(data_dir: &Path) -> PathBuf {
@@ -96,25 +117,36 @@ fn valid_db(name: &str) -> bool {
     !name.is_empty() && name.len() <= 63 && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
 }
 
-/// A project's settings and the component file of each app, from either
-/// layout; none if nothing is deployed there.
-fn read_project(dir: &Path, project: &str) -> Result<Option<(Settings, BTreeMap<String, PathBuf>)>> {
-    let file = dir.join("project.toml");
-    if file.exists() {
-        let text = std::fs::read_to_string(&file).map_err(|e| format_err!("{}: {e}", file.display()))?;
-        let settings: Settings = toml::from_str(&text).map_err(|e| format_err!("{}: {e}", file.display()))?;
-        let code = settings.apps.keys().map(|a| (a.clone(), dir.join("code").join(format!("{a}.cwasm")))).filter(|(_, f)| f.exists()).collect();
-        return Ok(Some((settings, code)));
+/// The release a project runs.
+pub fn current(data_dir: &Path, project: &str) -> Option<String> {
+    let id = std::fs::read_to_string(project_dir(data_dir, project).join("current")).ok()?;
+    let id = id.trim();
+    store::valid_hash(id).then(|| id.to_string())
+}
+
+/// Points the project at a release (none: it runs nothing).
+pub fn set_current(data_dir: &Path, project: &str, id: Option<&str>) -> Result<()> {
+    let file = project_dir(data_dir, project).join("current");
+    match id {
+        Some(id) => {
+            std::fs::create_dir_all(file.parent().unwrap())?;
+            write_atomic(&file, id.as_bytes())
+        }
+        None => {
+            let _ = std::fs::remove_file(file);
+            Ok(())
+        }
     }
-    let (old, component) = (dir.join("app.toml"), dir.join("app.cwasm"));
-    if !old.exists() || !component.exists() {
-        return Ok(None);
-    }
-    let text = std::fs::read_to_string(&old).map_err(|e| format_err!("{}: {e}", old.display()))?;
-    let o: OldSettings = toml::from_str(&text).map_err(|e| format_err!("{}: {e}", old.display()))?;
-    let app = AppSettings { websocket: o.websocket, ..Default::default() };
-    let settings = Settings { domains: o.domains, databases: o.databases, outbound: o.outbound, apps: [(project.to_string(), app)].into() };
-    Ok(Some((settings, [(project.to_string(), component)].into())))
+}
+
+pub fn load_release(data_dir: &Path, id: &str) -> Result<Release> {
+    let bytes = store::read_release(data_dir, id)?;
+    serde_json::from_slice(&bytes).map_err(|e| format_err!("release {id}: {e}"))
+}
+
+/// Stores a release's manifest (as the server writes it); its id.
+pub fn put_release(data_dir: &Path, release: &Release) -> Result<String> {
+    store::put_release(data_dir, &serde_json::to_vec(release)?)
 }
 
 /// Adds every deployed project's apps to `deployment`.
@@ -123,16 +155,21 @@ pub fn add_to(deployment: &mut Deployment, data_dir: &Path) -> Result<()> {
     let mut names: Vec<String> = entries.filter_map(|e| e.ok()?.file_name().into_string().ok()).filter(|n| valid_name(n)).collect();
     names.sort();
     for project in names {
+        let Some(id) = current(data_dir, &project) else { continue };
+        let release = load_release(data_dir, &id)?;
         let dir = project_dir(data_dir, &project);
-        let Some((settings, code)) = read_project(&dir, &project)? else { continue };
+        let settings = &release.settings;
         let env = read_secrets(&dir)?;
         for (app, s) in &settings.apps {
             let name = app_name(&project, app);
             if deployment.apps.contains_key(&name) || deployment.sites.contains_key(&name) {
                 bail!("{name:?} is both in the deployment file and deployed over the API ({}); remove one", dir.display());
             }
-            let static_dir = s.has_static.then(|| dir.join("static").join(app));
-            let Some(component) = code.get(app) else {
+            let static_dir = match release.files.get(app).filter(|f| !f.is_empty()) {
+                Some(files) => Some(store::site_dir(data_dir, files)?),
+                None => None,
+            };
+            let Some(hash) = release.components.get(app) else {
                 // files only
                 let Some(static_dir) = static_dir else { continue };
                 let site = crate::deployment::SiteSpec { static_dir, domains: settings.domains.clone(), path: s.path.clone(), spa: s.spa };
@@ -140,7 +177,8 @@ pub fn add_to(deployment: &mut Deployment, data_dir: &Path) -> Result<()> {
                 continue;
             };
             let spec = AppSpec {
-                component: component.clone(),
+                component: store::compiled(data_dir, hash)?,
+                source: Some(hash.clone()),
                 static_dir,
                 databases: settings.databases.iter().map(|d| format!("{project}/{d}")).collect(),
                 db_aliases: settings.databases.iter().map(|d| (d.clone(), format!("{project}/{d}"))).collect(),
@@ -166,59 +204,17 @@ fn read_secrets(dir: &Path) -> Result<BTreeMap<String, String>> {
     }
 }
 
-/// What a deploy request carries.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Upload {
-    pub settings: Settings,
-    /// SQL to run on a database before the new version starts (idempotent:
-    /// `create table if not exists ...`), by database name.
-    #[serde(default)]
-    pub schema: BTreeMap<String, String>,
-    /// Each app's component, base64 (an app with only files has none).
-    #[serde(default)]
-    pub components: BTreeMap<String, String>,
-    /// Each app's static files: path in the site (`assets/app.js`) →
-    /// content, base64.
-    #[serde(default)]
-    pub files: BTreeMap<String, BTreeMap<String, String>>,
-}
-
-/// The files of a deploy, in place; the previous ones (in `.previous/`), to
-/// put back if the new version doesn't load.
-pub struct Staged {
-    dir: PathBuf,
-}
-
-/// The files a deploy replaces: the settings and the code, in either layout.
-const REPLACED: [&str; 5] = ["project.toml", "code", "static", "app.toml", "app.cwasm"];
-
-impl Staged {
-    pub fn restore(self) {
-        for f in REPLACED {
-            let _ = remove(&self.dir.join(f));
-            let _ = std::fs::rename(self.dir.join(".previous").join(f), self.dir.join(f));
-        }
-        let _ = std::fs::remove_dir_all(self.dir.join(".previous"));
-    }
-
-    pub fn commit(self) {
-        let _ = std::fs::remove_dir_all(self.dir.join(".previous"));
-    }
-}
-
-fn remove(path: &Path) -> std::io::Result<()> {
-    if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }
-}
-
-/// Checks and writes a deploy: the schema first (on the project's
-/// databases), then the settings and the code. `taken`: names of the
-/// deployment file's apps and sites. Runs on a blocking thread.
-pub fn stage(engine: &wasmtime::Engine, data_dir: &Path, project: &str, upload: Upload, taken: &[String]) -> Result<Staged> {
+/// Checks a release for `project`: names, paths, databases, and that its
+/// parts are all in the store. `taken`: names of the deployment file's
+/// apps and sites.
+pub fn check(data_dir: &Path, project: &str, r: &Release, taken: &[String]) -> Result<()> {
     if !valid_name(project) {
         bail!("{project:?} isn't a valid project name: lower-case letters, digits and -, starting with a letter");
     }
-    let s = &upload.settings;
+    if r.project != project {
+        bail!("the release is for project {:?}, not {project:?}", r.project);
+    }
+    let s = &r.settings;
     if s.apps.is_empty() {
         bail!("the project has no apps");
     }
@@ -235,29 +231,23 @@ pub fn stage(engine: &wasmtime::Engine, data_dir: &Path, project: &str, upload: 
                 bail!("app {app:?}: path {path:?} must start with / and not end with one (\"/api\")");
             }
         }
-        let has_files = upload.files.get(app).is_some_and(|f| !f.is_empty());
-        if a.has_static != has_files {
-            bail!("app {app:?}: `static` says {}, and the deploy has {} files for it", a.has_static, if has_files { "some" } else { "no" });
-        }
-        if !upload.components.contains_key(app) && !has_files {
+        let has_files = r.files.get(app).is_some_and(|f| !f.is_empty());
+        if !r.components.contains_key(app) && !has_files {
             bail!("app {app:?} has neither code nor files");
         }
-        if a.spa && upload.components.contains_key(app) {
+        if a.spa && r.components.contains_key(app) {
             bail!("app {app:?}: `spa` is for an app of files only; with code, the code answers what isn't a file");
         }
     }
-    if let Some(extra) = upload.components.keys().chain(upload.files.keys()).find(|a| !s.apps.contains_key(*a)) {
+    if let Some(extra) = r.components.keys().chain(r.files.keys()).find(|a| !s.apps.contains_key(*a)) {
         bail!("code or files for {extra:?}, which isn't one of the project's apps");
     }
-    let mut files: Vec<(String, std::path::PathBuf, Vec<u8>)> = Vec::new();
-    for (app, list) in &upload.files {
-        for (path, b64) in list {
+    for (app, list) in &r.files {
+        for path in list.keys() {
             let ok = !path.is_empty() && !path.starts_with('/') && path.len() <= 512 && path.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != ".." && !seg.contains('\\'));
             if !ok {
                 bail!("app {app:?}: {path:?} isn't a valid file path in a site");
             }
-            let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim()).map_err(|e| format_err!("app {app:?}: {path}: not base64: {e}"))?;
-            files.push((app.clone(), std::path::PathBuf::from(path), bytes));
         }
     }
     for db in &s.databases {
@@ -265,67 +255,154 @@ pub fn stage(engine: &wasmtime::Engine, data_dir: &Path, project: &str, upload: 
             bail!("{db:?} isn't a valid database name: letters, digits, _ and -");
         }
     }
-    for db in upload.schema.keys() {
+    for db in r.schema.keys() {
         if !s.databases.contains(db) {
             bail!("the schema is for database {db:?}, which isn't in the project's databases");
         }
     }
-    let mut compiled = BTreeMap::new();
-    for (app, b64) in &upload.components {
-        let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim()).map_err(|e| format_err!("app {app:?}: the component isn't base64: {e}"))?;
-        if !bytes.starts_with(b"\0asm") {
-            bail!("app {app:?}: the component isn't a WebAssembly file");
-        }
-        let code = engine.precompile_component(&bytes).map_err(|e| format_err!("app {app:?}: the component doesn't compile: {e:?}"))?;
-        compiled.insert(app.clone(), code);
+    let missing = missing_blobs(data_dir, r);
+    if !missing.is_empty() {
+        bail!("the store doesn't have {} of the release's parts (upload them first): {}", missing.len(), missing.join(", "));
+    }
+    Ok(())
+}
+
+pub fn missing_blobs(data_dir: &Path, r: &Release) -> Vec<String> {
+    let mut seen = HashSet::new();
+    r.blobs().filter(|h| seen.insert(*h) && !store::has_blob(data_dir, h)).cloned().collect()
+}
+
+/// Gets a checked release ready to run: compiles its components, lays out
+/// its sites, applies its schema. Blocking.
+pub fn prepare(data_dir: &Path, project: &str, r: &Release) -> Result<()> {
+    for (app, hash) in &r.components {
+        store::compiled(data_dir, hash).map_err(|e| format_err!("app {app:?}: {e}"))?;
+    }
+    for files in r.files.values().filter(|f| !f.is_empty()) {
+        store::site_dir(data_dir, files)?;
     }
     let dir = project_dir(data_dir, project);
     std::fs::create_dir_all(dir.join("db"))?;
-    for (db, sql) in &upload.schema {
+    for (db, hash) in &r.schema {
+        let sql = String::from_utf8(store::read_blob(data_dir, hash)?).map_err(|_| format_err!("the schema of database {db:?} isn't UTF-8"))?;
         let file = dir.join("db").join(format!("{db}.db"));
         let conn = rusqlite::Connection::open(&file).map_err(|e| format_err!("database {db:?}: {e}"))?;
         conn.pragma_update(None, "journal_mode", "wal").ok();
-        conn.execute_batch(sql).map_err(|e| format_err!("the schema of database {db:?} failed: {e}"))?;
+        conn.execute_batch(&sql).map_err(|e| format_err!("the schema of database {db:?} failed: {e}"))?;
     }
-    // the history keeps each app's code before it's replaced
-    if let Some((_, code)) = read_project(&dir, project)? {
-        for (app, file) in code {
-            crate::versions::save(data_dir, &app_name(project, &app), &file)?;
+    Ok(())
+}
+
+/// A line of a project's history.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Entry {
+    pub id: String,
+    pub at_ms: u64,
+    #[serde(default)]
+    pub note: String,
+}
+
+/// The releases a project ran, oldest first.
+pub fn history(data_dir: &Path, project: &str) -> Vec<Entry> {
+    let text = std::fs::read_to_string(project_dir(data_dir, project).join("history.jsonl")).unwrap_or_default();
+    text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+}
+
+/// Notes that the project now runs release `id`, and clears out what no
+/// recent release uses.
+pub fn record(data_dir: &Path, project: &str, id: &str, note: &str) -> Result<()> {
+    use std::io::Write as _;
+    let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let line = serde_json::to_string(&Entry { id: id.to_string(), at_ms, note: note.chars().take(500).collect() })?;
+    let file = project_dir(data_dir, project).join("history.jsonl");
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&file)?;
+    writeln!(f, "{line}")?;
+    drop(f);
+    // keep the last KEEP entries
+    let all = history(data_dir, project);
+    if all.len() > KEEP * 2 {
+        let kept: String = all[all.len() - KEEP..].iter().filter_map(|e| serde_json::to_string(e).ok()).map(|l| l + "\n").collect();
+        write_atomic(&file, kept.as_bytes())?;
+    }
+    collect_garbage(data_dir);
+    Ok(())
+}
+
+/// Releases kept per project for rollback.
+const KEEP: usize = 20;
+
+/// Removes from the store what no project's recent releases use.
+pub fn collect_garbage(data_dir: &Path) {
+    let mut keep = HashSet::new();
+    let Ok(entries) = std::fs::read_dir(root(data_dir)) else { return };
+    for e in entries.flatten() {
+        let Ok(project) = e.file_name().into_string() else { continue };
+        let h = history(data_dir, &project);
+        keep.extend(h.iter().rev().take(KEEP).map(|e| e.id.clone()));
+        keep.extend(current(data_dir, &project));
+    }
+    let (mut blobs, mut sites) = (HashSet::new(), HashSet::new());
+    for id in &keep {
+        if let Ok(r) = load_release(data_dir, id) {
+            blobs.extend(r.blobs().cloned());
+            sites.extend(r.files.values().filter(|f| !f.is_empty()).map(store::site_key));
         }
     }
-    let previous = dir.join(".previous");
-    let _ = std::fs::remove_dir_all(&previous);
-    std::fs::create_dir_all(&previous)?;
-    for f in REPLACED {
-        if dir.join(f).exists() {
-            std::fs::rename(dir.join(f), previous.join(f))?;
-        }
+    let removed = store::collect_garbage(data_dir, &keep, &blobs, &sites);
+    if removed > 0 {
+        eprintln!("store: removed {removed} parts no recent release uses");
     }
-    let staged = Staged { dir: dir.clone() };
-    let written = (|| -> Result<()> {
-        std::fs::create_dir_all(dir.join("code"))?;
-        for (app, code) in &compiled {
-            write_atomic(&dir.join("code").join(format!("{app}.cwasm")), code)?;
+}
+
+/// A deploy with everything inline (base64), for clients that don't speak
+/// the store: turned into blobs and a release.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Upload {
+    pub settings: Settings,
+    #[serde(default)]
+    pub schema: BTreeMap<String, String>,
+    #[serde(default)]
+    pub components: BTreeMap<String, String>,
+    #[serde(default)]
+    pub files: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl Upload {
+    pub fn into_release(self, data_dir: &Path, project: &str) -> Result<Release> {
+        let put = |bytes: Vec<u8>| -> Result<String> {
+            let h = store::sha256_hex(&bytes);
+            store::put_blob(data_dir, &h, &bytes)?;
+            Ok(h)
+        };
+        let b64 = |s: &str, what: &str| base64::engine::general_purpose::STANDARD.decode(s.trim()).map_err(|e| format_err!("{what}: not base64: {e}"));
+        let mut r = Release { project: project.to_string(), settings: self.settings, components: BTreeMap::new(), files: BTreeMap::new(), schema: BTreeMap::new(), compiler: None };
+        for (app, c) in self.components {
+            let bytes = b64(&c, &format!("app {app:?}"))?;
+            if !bytes.starts_with(b"\0asm") {
+                bail!("app {app:?}: the component isn't a WebAssembly file");
+            }
+            r.components.insert(app, put(bytes)?);
         }
-        for (app, path, bytes) in &files {
-            let file = dir.join("static").join(app).join(path);
-            std::fs::create_dir_all(file.parent().unwrap())?;
-            std::fs::write(&file, bytes)?;
+        for (app, list) in self.files {
+            let mut out = BTreeMap::new();
+            for (path, c) in list {
+                out.insert(path.clone(), put(b64(&c, &format!("app {app:?}: {path}"))?)?);
+            }
+            r.files.insert(app, out);
         }
-        write_atomic(&dir.join("project.toml"), toml::to_string(s)?.as_bytes())
-    })();
-    if let Err(e) = written {
-        staged.restore();
-        return Err(e);
+        for (db, sql) in self.schema {
+            r.schema.insert(db, put(sql.into_bytes())?);
+        }
+        Ok(r)
     }
-    Ok(staged)
 }
 
 /// Sets (or, with `None`, removes) secrets of a deployed app; returns the
 /// previous file to put back if the reload fails.
 pub fn set_secrets(data_dir: &Path, name: &str, changes: BTreeMap<String, Option<String>>) -> Result<Option<Vec<u8>>> {
     let dir = project_dir(data_dir, name);
-    if read_project(&dir, name)?.is_none() {
+    if current(data_dir, name).is_none() {
         bail!("no deployed project named {name:?}");
     }
     for key in changes.keys() {
@@ -362,7 +439,7 @@ pub fn restore_secrets(data_dir: &Path, name: &str, before: Option<Vec<u8>>) {
 /// The names (not the values) of a deployed app's secrets.
 pub fn secret_names(data_dir: &Path, name: &str) -> Result<Vec<String>> {
     let dir = project_dir(data_dir, name);
-    if read_project(&dir, name)?.is_none() {
+    if current(data_dir, name).is_none() {
         bail!("no deployed project named {name:?}");
     }
     Ok(read_secrets(&dir)?.into_keys().collect())

@@ -422,40 +422,50 @@ browser ── short.localhost ──► static site (host)
 ## Deploying projects over the API (`plumb deploy`)
 
 Besides the apps in the deployment file, the admin can create projects over
-`/_platform/` (`server/src/managed.rs`), which is what `plumb deploy` does. A
-project is one or more apps sharing domains, databases and secrets:
+`/_platform/` (`server/src/managed.rs`, `server/src/store.rs`), which is
+what `plumb deploy` does. A project is one or more apps sharing domains,
+databases and secrets, and it runs a **release**: a manifest naming its
+settings and, by SHA-256, each app's component, its static files and the
+schema.
 
-- **`POST /_platform/projects/NAME/deploy`** with JSON `{"settings":
-  {"domains": [...], "databases": ["main"], "outbound": [...], "apps":
-  {"web": {}, "api": {"path": "/api"}}}, "schema": {"main": "create table if
-  not exists ..."}, "components": {"web": "<base64 .wasm>", "api": "..."}}`
-  creates or replaces the whole project without downtime. The schema runs
-  first; then all its apps switch together, or, if one doesn't load (or
-  takes a domain and path another app has), none of them do.
+- **The store** (`<data-dir>/store/`) keeps every part once by its hash,
+  however many releases use it. Compiled components (`.cwasm`) are a local
+  cache made from the `.wasm` for this server's Wasmtime and CPU, so a
+  release moves between servers as it is.
+- **A deploy sends only what's new:** `POST blobs/missing` with the
+  release's hashes, `POST blobs` with the missing ones (`HASH LENGTH\n`
+  then the bytes, repeated, in one request), then `POST
+  projects/NAME/releases` with `{"release": {...}, "note": "..."}`. A
+  changed page uploads one file; unchanged code uploads nothing.
+- **Switching:** the server checks the release, compiles what's new,
+  applies the schema, points the project at it (`apps/NAME/current`) and
+  reloads. All its apps switch together, or, if one doesn't load (or takes
+  a domain and path another app has), none do.
+- **History and rollback:** `apps/NAME/history.jsonl` lists the releases it
+  ran with a note (`plumb deploy` sends the git commit). `POST
+  projects/NAME/rollback[?to=ID]` goes back (`plumb rollback`); nothing is
+  rebuilt or uploaded. The last 20 releases of each project are kept; parts
+  no kept release uses are removed.
+- **Cluster workers** fetch a release's `.wasm` by hash from the primary
+  and compile it themselves.
+- **Not in releases:** data (databases, users' files) and secrets, so a
+  rollback doesn't bring back an old key.
+- `POST projects/NAME/deploy` takes the same with every part inline
+  (base64), for scripts.
 - **Paths:** apps of a project share its domains, each taking a `path`
   (`/api`: `/api` and below, not `/apix`); the longest matching path wins,
   and an app without one takes the rest. The app sees the whole path.
-- **Files:** an app can carry static files (`"static": true` in its
-  settings, and its files in the deploy's `"files": {"site": {"index.html":
-  "<base64>", ...}}`). With code, the files are served first; without, it's
-  a site, and `"spa": true` makes paths that aren't files (and have no
-  extension) get `index.html`. Under a `path`, its files are below that
-  path. They're kept in `static/APP/`.
+- **Files:** an app can carry static files (a site, or with `"spa": true`
+  a single-page app whose page paths get `index.html`). With code, the
+  files are served first. Under a `path`, its files are below that path.
 - **Names:** an app named like its project is `NAME` to the server; the
   others are `NAME.APP` (`shop.api`), in logs, metrics and the API.
   `metrics?project=NAME` adds a project's apps together.
 - **Databases** are the project's own SQLite files, which its apps open by
-  their own names (`db.open("main")` is `shop/main`); they are backed up
-  and billed like the others.
+  their own names (`db.open("main")` is `shop/main`).
 - **`PUT /_platform/projects/NAME/secrets`** with `{"KEY": "value", "OLD":
   null}` sets or removes environment variables of all its apps, kept
   owner-only on disk; `GET` lists their names.
-- Everything lives in `<data-dir>/apps/NAME/` (`project.toml`,
-  `code/APP.cwasm`, `db/`, `secrets.json`), so a restart brings the projects
-  back. A server can start with none and wait for its first deploy. (An
-  `app.toml` with `app.cwasm` there, from before projects, is read as a
-  project of one app; `apps/NAME/deploy` and `apps/NAME/secrets` are the
-  same endpoints.)
 
 ## Logs and request metrics
 

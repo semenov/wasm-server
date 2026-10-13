@@ -23,6 +23,7 @@ mod routes;
 mod server;
 mod static_files;
 mod storage;
+mod store;
 mod usage;
 mod stats;
 mod tls;
@@ -417,6 +418,10 @@ fn main() -> Result<()> {
             };
             db::MANAGED_DIR.set(data_dir.join("apps")).ok();
             logs::DIR.set(data_dir.join("logs")).ok();
+            let max_memory = max_memory_mb << 20;
+            let engine = engine::build(&engine_args.opts(max_memory))?;
+            // the store compiles deployed projects' components with it
+            store::ENGINE.set(engine.clone()).ok();
             let deployment = source.load(&data_dir)?;
             if deployment.apps.is_empty() && deployment.sites.is_empty() {
                 eprintln!("note: no apps yet; deploy one (plumb deploy, or POST /_platform/projects/NAME/deploy)");
@@ -447,8 +452,6 @@ fn main() -> Result<()> {
                 }
             }
 
-            let max_memory = max_memory_mb << 20;
-            let engine = engine::build(&engine_args.opts(max_memory))?;
             let accounts = loader::Accounts::default();
             let mut components = loader::ComponentCache::default();
             let defaults = loader::Defaults { db_timeout: Duration::from_millis(db_timeout_ms), cache_bytes: cache_mb << 20 };

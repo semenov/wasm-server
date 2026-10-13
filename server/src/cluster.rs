@@ -60,6 +60,10 @@ pub struct AppState {
     pub path: Option<String>,
     #[serde(default)]
     pub project: Option<String>,
+    /// The `.wasm` in the primary's store (apps of projects): fetched by
+    /// hash and compiled here, for this worker's CPU.
+    #[serde(default)]
+    pub source: Option<String>,
     pub outbound: Option<Vec<String>>,
     pub websocket: Option<String>,
     pub env: BTreeMap<String, String>,
@@ -366,8 +370,18 @@ pub fn load_deployment(data_dir: &std::path::Path) -> Result<crate::deployment::
         d.databases.insert(db.clone(), crate::deployment::DatabaseSpec { url: "remote:".into(), init: None });
     }
     for app in &state.apps {
-        let file = dir.join(format!("{}.cwasm", app.hash));
-        if !file.exists() {
+        let mut file = dir.join(format!("{}.cwasm", app.hash));
+        if let Some(src) = &app.source {
+            // a project's app: its .wasm by hash, compiled here
+            if !crate::store::has_blob(data_dir, src) {
+                let (status, bytes) = rt.block_on(call(&w.primary, "GET", &format!("/cluster/blob/{src}"), &w.token, Bytes::new()))?;
+                if status != 200 {
+                    bail!("component of {}: the primary answered {status}", app.name);
+                }
+                crate::store::put_blob(data_dir, src, &bytes)?;
+            }
+            file = crate::store::compiled(data_dir, src)?;
+        } else if !file.exists() {
             let (status, bytes) = rt.block_on(call(&w.primary, "GET", &format!("/cluster/component/{}", app.name), &w.token, Bytes::new()))?;
             if status != 200 {
                 bail!("component of {}: the primary answered {status}", app.name);
@@ -539,6 +553,7 @@ impl Primary {
                 domains: spec.domains.clone(),
                 path: spec.path.clone(),
                 project: spec.project.clone(),
+                source: spec.source.clone(),
                 outbound: spec.outbound.clone(),
                 websocket: spec.websocket.clone(),
                 env: spec.env.clone(),
@@ -780,6 +795,10 @@ async fn serve(p: Arc<Primary>, pools: Arc<crate::db::Pools>, txs: Arc<crate::db
                 _ => reply(StatusCode::NOT_FOUND, json!({ "error": format!("no app {name:?}") }).to_string()),
             }
         }
+        ("GET", path) if path.starts_with("/cluster/blob/") => match crate::store::read_blob(&p.platform.data_dir, &path["/cluster/blob/".len()..]) {
+            Ok(bytes) => Response::builder().header("content-type", "application/octet-stream").body(Full::new(Bytes::from(bytes))).unwrap(),
+            Err(e) => reply(StatusCode::NOT_FOUND, json!({ "error": e.to_string() }).to_string()),
+        },
         ("POST", "/cluster/heartbeat") => match serde_json::from_slice::<Heartbeat>(&body) {
             Ok(hb) => reply(StatusCode::OK, p.heartbeat(hb).to_string()),
             Err(e) => reply(StatusCode::BAD_REQUEST, json!({ "error": e.to_string() }).to_string()),
