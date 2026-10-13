@@ -447,6 +447,24 @@ Besides the apps in the deployment file, the admin can create apps over
   `db/`, `secrets.json`), so a restart brings the apps back. A server can
   start with no apps at all and wait for its first deploy.
 
+## Logs and request metrics
+
+- **Each app's log** (`server/src/logs.rs`): what its instances write to
+  stdout and stderr, and a line from the host for every failed request
+  (5xx, timeouts) and every one slower than a second, with where its time
+  went: `GET /slow-api → 200 in 2.61 s (cpu 0.9 ms, http 1 request 2.61 s)`.
+  Kept in `<data-dir>/logs/APP.log` (rotated at 10 MB) and echoed to the
+  server's stderr as `APP: line`. `GET /_platform/apps/APP/logs?lines=N`
+  (or `?since=OFFSET` to follow it; `plumb logs -f`).
+- **Per-minute metrics** (`server/src/metrics.rs`), 30 days in
+  `<data-dir>/metrics.db`: requests, failures, p50/p95/p99 from a
+  histogram of request times, and the average request's time split into
+  CPU, database, outgoing HTTP and the rest. `GET
+  /_platform/metrics?app=APP&range=1h|6h|24h|7d|30d` (`plumb stats`), drawn
+  at `/_platform/requests`.
+- **Waiting isn't CPU:** time an instance waits on the database, other
+  functions or outgoing HTTP doesn't count against `--cpu-limit-ms`.
+
 ## HTTPS
 
 `--https` serves `--listen` over TLS with certificates from Let's Encrypt for

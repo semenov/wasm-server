@@ -3,7 +3,10 @@
 //! | Path | Method | Who | What |
 //! |---|---|---|---|
 //! | `/_platform/` | GET | any | usage and billing dashboard |
+//! | `requests` | GET | any | charts of an app's requests, times and errors (from `metrics`) |
 //! | `billing`, `stats`, `jobs` | GET | any | JSON (a tenant sees its own apps) |
+//! | `metrics?app=NAME&range=24h` | GET | any (a tenant: its apps) | requests, errors, percentiles and where the time went, by minute |
+//! | `apps/NAME/logs[?lines=N\|since=OFFSET]` | GET | owner | the app's log (text; `x-log-offset` for following it) |
 //! | `whoami` | GET | any | `{"role": "admin" \| "tenant" \| "anonymous"}`: checks a token |
 //! | `apps/NAME` | PUT | owner | upload a new component, then reload |
 //! | `apps/NAME/deploy` | POST | admin | create or update an app with its settings (`managed.rs`) |
@@ -133,6 +136,7 @@ async fn route(platform: Arc<Platform>, req: Request<Incoming>, path: &str, who:
     let admin_only = || error(StatusCode::FORBIDDEN, "only the admin token can do this");
     match (&method, segments.as_slice()) {
         (&Method::GET, [""] | ["dashboard"]) => respond(StatusCode::OK, "text/html; charset=utf-8", include_str!("dashboard.html")),
+        (&Method::GET, ["requests"]) => respond(StatusCode::OK, "text/html; charset=utf-8", include_str!("requests.html")),
         (&Method::GET, ["billing"]) => {
             let current = platform.current();
             let tenant_of = |name: &str| current.deployment.tenant_of(name).map(str::to_string);
@@ -145,6 +149,18 @@ async fn route(platform: Arc<Platform>, req: Request<Incoming>, path: &str, who:
             json(StatusCode::OK, platform.stats.to_json(&names, &|name| who.sees(&platform, name)))
         }
         (&Method::GET, ["jobs"]) => json(StatusCode::OK, jobs_json(&platform, &who).await),
+        (&Method::GET, ["metrics"]) => {
+            let arg = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(&format!("{k}="))).map(|v| v.to_string());
+            let Some(app) = arg("app") else { return error(StatusCode::BAD_REQUEST, "metrics?app=NAME&range=1h|6h|24h|7d|30d") };
+            let range = arg("range").unwrap_or_else(|| "24h".into());
+            if !who.sees(&platform, &app) {
+                return error(StatusCode::FORBIDDEN, &format!("not allowed to see {app:?}"));
+            }
+            match crate::metrics::METRICS.get().and_then(|m| m.query(&app, &range)) {
+                Some(body) => json(StatusCode::OK, body),
+                None => error(StatusCode::BAD_REQUEST, "range must be 1h, 6h, 24h, 7d or 30d"),
+            }
+        }
         (&Method::GET, ["whoami"]) => {
             let role = match &who {
                 Principal::Admin => serde_json::json!({ "role": "admin" }),
@@ -167,6 +183,19 @@ async fn route(platform: Arc<Platform>, req: Request<Incoming>, path: &str, who:
         (&Method::PUT, ["apps", app, "secrets"]) if who == Principal::Admin => set_secrets(platform, req, app.to_string()).await,
         (_, ["apps", _, "deploy" | "secrets"]) => admin_only(),
         (&Method::GET, ["apps", app, "versions"]) => list_versions(&platform, app),
+        (&Method::GET, ["apps", app, "logs"]) => {
+            let arg = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(&format!("{k}="))).and_then(|v| v.parse::<u64>().ok());
+            let (text, offset) = match arg("since") {
+                Some(from) => crate::logs::since(app, from),
+                None => {
+                    let text = crate::logs::tail(app, arg("lines").unwrap_or(100).min(10_000) as usize);
+                    (text, crate::logs::since(app, u64::MAX).1)
+                }
+            };
+            let mut resp = respond(StatusCode::OK, "text/plain; charset=utf-8", text);
+            resp.headers_mut().insert("x-log-offset", HeaderValue::from(offset));
+            resp
+        }
         (&Method::POST, ["apps", app, "rollback"]) => {
             let to = query.split('&').find_map(|kv| kv.strip_prefix("to=")).map(str::to_string);
             rollback(platform, app.to_string(), to).await

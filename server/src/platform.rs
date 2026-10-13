@@ -163,20 +163,29 @@ impl Env {
     }
 }
 
-/// Records an instance's resource use when it's done.
-fn record(env: &Env, app: &App, store: &Store<RequestState>, started: Instant) {
+/// Records an instance's resource use when it's done, and puts what it
+/// wrote into its app's log.
+fn record(env: &Env, app: &App, store: &Store<RequestState>, started: Instant) -> InstanceUsage {
     let state = store.data();
-    env.platform.stats.counters(env.worker, app.id).instance_done(&InstanceUsage {
+    let usage = InstanceUsage {
         wall_ns: started.elapsed().as_nanos() as u64,
         cpu_ns: state.cpu_used().as_nanos() as u64,
         mem_peak: state.limits.memory as u64,
         db_queries: state.db.queries,
         db_wait_ns: state.db.wait.as_nanos() as u64,
-    });
+        outbound_requests: state.outbound.usage.requests.load(std::sync::atomic::Ordering::Relaxed),
+        outbound_wait_ns: state.outbound_wait().as_nanos() as u64,
+    };
+    env.platform.stats.counters(env.worker, app.id).instance_done(&usage);
+    let output = state.output.contents();
+    if !output.is_empty() {
+        crate::logs::write(&app.name, &String::from_utf8_lossy(&output));
+    }
+    usage
 }
 
 /// Instantiates a fresh copy of `app` and runs its HTTP handler.
-pub async fn http<B>(env: Env, app: Arc<App>, req: Request<B>) -> Result<Response<HyperOutgoingBody>>
+pub async fn http<B>(env: Env, app: Arc<App>, req: Request<B>, log: Arc<crate::logs::RequestLog>) -> Result<Response<HyperOutgoingBody>>
 where
     B: Body<Data = Bytes> + Send + 'static,
     B::Error: Into<wasmtime_wasi_http::Error>,
@@ -196,7 +205,7 @@ where
         let started = Instant::now();
         let instance = proxy.instantiate_async(&mut store).await?;
         let result = instance.wasi_http_incoming_handler().call_handle(&mut store, req, out).await;
-        record(&env, &app, &store, started);
+        *log.usage.lock().unwrap() = Some(record(&env, &app, &store, started));
         result
     });
     // If this future is dropped (wall-clock timeout) before the guest has
@@ -237,7 +246,7 @@ pub async fn event(env: Env, app: &App, kind: Kind, id: String, name: String, pa
     })
     .await
     .unwrap_or_else(|_| Err(format_err!("timed out")));
-    record(&env, app, &store, started);
+    let _ = record(&env, app, &store, started);
     result
 }
 
@@ -262,7 +271,7 @@ async fn websocket<T>(
     })
     .await
     .unwrap_or_else(|_| Err(format_err!("timed out")));
-    record(&env, app, &store, started);
+    let _ = record(&env, app, &store, started);
     result
 }
 
@@ -306,7 +315,7 @@ pub async fn call(env: &Env, target: &App, interface: &str, function: &str, para
     })
     .await
     .unwrap_or_else(|_| Err(format_err!("timed out")));
-    record(&env, target, &store, started);
+    let _ = record(&env, target, &store, started);
     if let Err(e) = &result {
         counters.error();
         return Err(format_err!("call to {}'s {interface}#{function} failed: {e:?}", target.name));

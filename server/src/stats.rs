@@ -44,10 +44,16 @@ pub enum Counter {
     OutboundRequests,
     OutboundBytesSent,
     OutboundBytesReceived,
+    /// Time instances waited on outgoing HTTP requests.
+    OutboundWaitNs,
+    /// HTTP responses with a 4xx or 5xx status (the guest's, or the host's
+    /// 500 and 504).
+    Http4xx,
+    Http5xx,
 }
 
 impl Counter {
-    pub const ALL: [Counter; 24] = [
+    pub const ALL: [Counter; 27] = [
         Counter::Requests,
         Counter::Errors,
         Counter::Timeouts,
@@ -72,6 +78,9 @@ impl Counter {
         Counter::OutboundRequests,
         Counter::OutboundBytesSent,
         Counter::OutboundBytesReceived,
+        Counter::OutboundWaitNs,
+        Counter::Http4xx,
+        Counter::Http5xx,
     ];
 
     /// Key in `/_platform/stats`.
@@ -101,21 +110,35 @@ impl Counter {
             Counter::OutboundRequests => "outbound_requests",
             Counter::OutboundBytesSent => "outbound_bytes_sent",
             Counter::OutboundBytesReceived => "outbound_bytes_received",
+            Counter::OutboundWaitNs => "outbound_wait_ns",
+            Counter::Http4xx => "http_4xx",
+            Counter::Http5xx => "http_5xx",
         }
     }
 }
 
 const N: usize = Counter::ALL.len();
 
+/// Upper bounds (µs) of the buckets of HTTP request times; one more bucket
+/// holds everything slower. About 1.5× apart: percentiles read from them are
+/// within half a bucket.
+pub const LATENCY_BOUNDS_US: [u64; 30] = [
+    100, 150, 200, 300, 500, 750, 1_000, 1_500, 2_000, 3_000, 5_000, 7_500, 10_000, 15_000, 20_000, 30_000, 50_000, 75_000, 100_000,
+    150_000, 200_000, 300_000, 500_000, 750_000, 1_000_000, 1_500_000, 2_000_000, 3_000_000, 5_000_000, 10_000_000,
+];
+pub const LATENCY_BUCKETS: usize = LATENCY_BOUNDS_US.len() + 1;
+
 #[repr(align(128))] // keep each account's counters on separate cache lines
 pub struct AppCounters {
     values: [AtomicU64; N],
     mem_peak_max: AtomicU64,
+    /// HTTP request times, by bucket of `LATENCY_BOUNDS_US`.
+    latency: [AtomicU64; LATENCY_BUCKETS],
 }
 
 impl Default for AppCounters {
     fn default() -> Self {
-        Self { values: std::array::from_fn(|_| AtomicU64::new(0)), mem_peak_max: AtomicU64::new(0) }
+        Self { values: std::array::from_fn(|_| AtomicU64::new(0)), mem_peak_max: AtomicU64::new(0), latency: std::array::from_fn(|_| AtomicU64::new(0)) }
     }
 }
 
@@ -127,6 +150,23 @@ impl AppCounters {
 
     pub fn request(&self) {
         self.add(Counter::Requests, 1);
+    }
+
+    /// One HTTP request's time, for the percentiles.
+    pub fn request_time(&self, ns: u64) {
+        let us = ns / 1000;
+        let i = LATENCY_BOUNDS_US.iter().position(|b| us <= *b).unwrap_or(LATENCY_BOUNDS_US.len());
+        let c = &self.latency[i];
+        c.store(c.load(Relaxed).wrapping_add(1), Relaxed);
+    }
+
+    /// An HTTP response's status.
+    pub fn status(&self, status: u16) {
+        match status {
+            400..=499 => self.add(Counter::Http4xx, 1),
+            500..=599 => self.add(Counter::Http5xx, 1),
+            _ => {}
+        }
     }
     pub fn error(&self) {
         self.add(Counter::Errors, 1);
@@ -143,18 +183,22 @@ impl AppCounters {
         self.add(Counter::MemPeakSum, u.mem_peak);
         self.add(Counter::DbQueries, u.db_queries);
         self.add(Counter::DbWaitNs, u.db_wait_ns);
+        self.add(Counter::OutboundWaitNs, u.outbound_wait_ns);
         if u.mem_peak > self.mem_peak_max.load(Relaxed) {
             self.mem_peak_max.store(u.mem_peak, Relaxed);
         }
     }
 }
 
+#[derive(Clone, Copy, Default, Debug)]
 pub struct InstanceUsage {
     pub wall_ns: u64,
     pub cpu_ns: u64,
     pub mem_peak: u64,
     pub db_queries: u64,
     pub db_wait_ns: u64,
+    pub outbound_requests: u64,
+    pub outbound_wait_ns: u64,
 }
 
 /// `workers[w][account_id]`
@@ -177,6 +221,17 @@ impl Stats {
         let mut out = [0u64; N];
         for w in &self.workers {
             for (i, v) in w[account].values.iter().enumerate() {
+                out[i] = out[i].wrapping_add(v.load(Relaxed));
+            }
+        }
+        out
+    }
+
+    /// HTTP request time buckets across workers for one account.
+    pub fn latency(&self, account: usize) -> [u64; LATENCY_BUCKETS] {
+        let mut out = [0u64; LATENCY_BUCKETS];
+        for w in &self.workers {
+            for (i, v) in w[account].latency.iter().enumerate() {
                 out[i] = out[i].wrapping_add(v.load(Relaxed));
             }
         }

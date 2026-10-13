@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>App requests</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --surface: #fcfcfb; --panel: #f4f4f2; --text: #0b0b0b; --text-2: #52514e; --muted: #75746f; --grid: #e4e3df; --line: #d9d8d3;
+      --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --critical: #d03b3b;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:where(:not([data-theme="light"])) {
+        color-scheme: dark;
+        --surface: #1a1a19; --panel: #222220; --text: #f0efec; --text-2: #c3c2b7; --muted: #9a998f; --grid: #333330; --line: #3a3a37;
+        --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --critical: #d03b3b;
+      }
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --surface: #1a1a19; --panel: #222220; --text: #f0efec; --text-2: #c3c2b7; --muted: #9a998f; --grid: #333330; --line: #3a3a37;
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --critical: #d03b3b;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--surface); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { max-width: 1000px; margin: 0 auto; padding: 24px 16px 48px; }
+    h1 { font-size: 1.5rem; margin: 0; }
+    .sub { color: var(--text-2); margin: 4px 0 16px; font-size: .9rem; }
+    .sub a { color: inherit; }
+    .filters { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 16px; }
+    select { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+    .ranges { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .ranges button { font: inherit; font-size: .85rem; border: 0; background: transparent; color: var(--text-2); padding: 6px 12px; cursor: pointer; }
+    .ranges button[aria-pressed="true"] { background: var(--panel); color: var(--text); font-weight: 600; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .tile { background: var(--panel); border-radius: 10px; padding: 12px 14px; }
+    .tile .label { color: var(--text-2); font-size: .8rem; }
+    .tile .value { font-size: 1.35rem; font-weight: 600; }
+    .tile .note { color: var(--muted); font-size: .78rem; }
+    .card { background: var(--panel); border-radius: 12px; padding: 14px 16px 10px; margin-bottom: 16px; position: relative; }
+    .card h2 { font-size: 1rem; margin: 0; }
+    .card .what { color: var(--text-2); font-size: .82rem; margin: 2px 0 8px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: .8rem; color: var(--text-2); margin-bottom: 4px; }
+    .key { display: inline-block; width: 12px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+    .key.line { height: 2px; border-radius: 1px; vertical-align: 3px; }
+    svg.chart { width: 100%; height: 190px; display: block; overflow: visible; touch-action: none; }
+    svg text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+    .tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: .8rem; box-shadow: 0 4px 16px rgba(0,0,0,.12); display: none; min-width: 150px; z-index: 2; }
+    .tip .t { color: var(--text-2); margin-bottom: 4px; }
+    .tip .row { display: flex; align-items: center; gap: 6px; }
+    .tip .row b { font-variant-numeric: tabular-nums; margin-left: auto; padding-left: 12px; }
+    .tip .row .key { width: 10px; }
+    .empty { color: var(--muted); padding: 40px 0; text-align: center; }
+    .loading { opacity: .5; transition: opacity .2s; }
+    details { margin-top: 8px; }
+    summary { cursor: pointer; color: var(--text-2); }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .8rem; margin-top: 8px; }
+    th, td { padding: 5px 6px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    th { color: var(--text-2); font-weight: 500; }
+    th:first-child, td:first-child { text-align: left; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>App requests</h1>
+    <p class="sub">How many requests an app answers, how fast, and where their time goes. A point covers one minute for the last hour, more for longer ranges. <a href="/_platform/">Usage and credits</a></p>
+    <div class="filters">
+      <label>App <select id="app"></select></label>
+      <div class="ranges" role="group" aria-label="Time range" id="ranges"></div>
+    </div>
+    <div id="body"><p class="empty">Loading…</p></div>
+  </main>
+  <script>
+    const RANGES = ["1h", "6h", "24h", "7d", "30d"];
+    const state = { app: null, range: "24h", data: null };
+    try { const saved = JSON.parse(localStorage.getItem("requests-view") || "{}"); if (RANGES.includes(saved.range)) state.range = saved.range; if (saved.app) state.app = saved.app; } catch (e) {}
+    const save = () => { try { localStorage.setItem("requests-view", JSON.stringify({ app: state.app, range: state.range })); } catch (e) {} };
+    const el = (tag, attrs = {}, ...kids) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) { if (k === "class") e.className = v; else if (k === "text") e.textContent = v; else e.setAttribute(k, v); } for (const k of kids) e.append(k); return e; };
+    const svgEl = (tag, attrs = {}) => { const e = document.createElementNS("http://www.w3.org/2000/svg", tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; };
+    const compact = n => n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "K" : String(Math.round(n));
+    const ms = v => v == null ? "–" : v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 2) + " s" : v >= 10 ? v.toFixed(0) + " ms" : v.toFixed(1) + " ms";
+    const when = (t, step) => { const d = new Date(t * 1000); const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); return step >= 3600 ? d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " + hm : hm; };
+
+    // four intervals of a round step: 0, 10K, 20K, 30K, 40K
+    function niceStep(v) { if (v <= 0) return 1; const p = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p; return 10 * p; }
+    const axisMs = v => v === 0 ? "0" : v >= 1000 ? +(v / 1000).toFixed(2) + " s" : +v.toFixed(2) + " ms";
+
+    // a chart over the range's time slots: columns (stacked) or lines, one y axis
+    function chart(card, { kind, series, slots, step, fmt, axis }) {
+      const W = 1000, H = 190, L = 44, R = 8, T = 8, B = 22;
+      const svg = svgEl("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img" });
+      const values = slots.map(p => series.map(s => p ? s.get(p) : null));
+      const top = 4 * niceStep(Math.max(0, ...values.map(v => kind === "stack" ? v.reduce((a, b) => a + (b || 0), 0) : Math.max(0, ...v.map(x => x || 0)))) / 4);
+      const x = i => L + (i + 0.5) * (W - L - R) / slots.length;
+      const y = v => T + (H - T - B) * (1 - v / top);
+      for (let k = 0; k <= 4; k++) {
+        const v = top * k / 4;
+        svg.append(svgEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--grid)", "stroke-width": 1, "vector-effect": "non-scaling-stroke" }));
+        const t = svgEl("text", { x: L - 6, y: y(v) + 4, "text-anchor": "end" }); t.textContent = (axis || fmt)(v); svg.append(t);
+      }
+      const labels = Math.min(6, slots.length);
+      for (let k = 0; k < labels; k++) {
+        const i = Math.round(k * (slots.length - 1) / Math.max(1, labels - 1));
+        const t = svgEl("text", { x: x(i), y: H - 6, "text-anchor": "middle" }); t.textContent = when(slots.t[i], step); svg.append(t);
+      }
+      const bw = Math.min(24, (W - L - R) / slots.length - 2);
+      if (kind === "stack") {
+        values.forEach((vals, i) => {
+          let base = 0;
+          vals.forEach((v, s) => {
+            if (!v) return;
+            const y0 = y(base), y1 = y(base + v);
+            const h = Math.max(0, y0 - y1 - (base > 0 ? 2 : 0));
+            const isTop = vals.slice(s + 1).every(z => !z);
+            const r = isTop ? Math.min(4, h / 2, bw / 2) : 0;
+            const xl = x(i) - bw / 2, yt = y0 - (base > 0 ? 2 : 0) - h;
+            const d = `M${xl},${yt + h} V${yt + r} Q${xl},${yt} ${xl + r},${yt} H${xl + bw - r} Q${xl + bw},${yt} ${xl + bw},${yt + r} V${yt + h} Z`;
+            svg.append(svgEl("path", { d, fill: series[s].color }));
+            base += v;
+          });
+        });
+      } else {
+        series.forEach((s, si) => {
+          let d = "", pen = false;
+          values.forEach((vals, i) => { const v = vals[si]; if (v == null) { pen = false; return; } d += (pen ? "L" : "M") + x(i) + "," + y(v); pen = true; });
+          svg.append(svgEl("path", { d, fill: "none", stroke: s.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round", "vector-effect": "non-scaling-stroke" }));
+        });
+      }
+      // hover: a crosshair that snaps to the nearest slot, one tooltip for all series
+      const cross = svgEl("line", { y1: T, y2: H - B, stroke: "var(--muted)", "stroke-width": 1, "vector-effect": "non-scaling-stroke", visibility: "hidden" });
+      svg.append(cross);
+      const tip = el("div", { class: "tip" });
+      card.append(svg, tip);
+      const show = ev => {
+        const box = svg.getBoundingClientRect();
+        const px = (ev.clientX - box.left) / box.width * W;
+        const i = Math.max(0, Math.min(slots.length - 1, Math.floor((px - L) / ((W - L - R) / slots.length))));
+        cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("visibility", "visible");
+        tip.replaceChildren(el("div", { class: "t", text: when(slots.t[i], step) }));
+        if (!slots[i]) tip.append(el("div", { class: "row", text: "no requests" }));
+        else series.slice().reverse().forEach(s => tip.append(el("div", { class: "row" }, el("span", { class: "key line", style: `background:${s.color}` }), el("span", { text: s.name }), el("b", { text: fmt(s.get(slots[i]) || 0) }))));
+        tip.style.display = "block";
+        const cardBox = card.getBoundingClientRect();
+        let left = ev.clientX - cardBox.left + 14;
+        if (left + tip.offsetWidth > cardBox.width - 8) left = ev.clientX - cardBox.left - tip.offsetWidth - 14;
+        tip.style.left = Math.max(4, left) + "px"; tip.style.top = (ev.clientY - cardBox.top - tip.offsetHeight / 2) + "px";
+      };
+      svg.addEventListener("pointermove", show);
+      svg.addEventListener("pointerleave", () => { tip.style.display = "none"; cross.setAttribute("visibility", "hidden"); });
+    }
+
+    function card(title, what, series, line) {
+      const c = el("section", { class: "card" }, el("h2", { text: title }), el("p", { class: "what", text: what }));
+      if (series.length > 1) c.append(el("div", { class: "legend" }, ...series.map(s => el("span", {}, el("span", { class: "key" + (line ? " line" : ""), style: `background:${s.color}` }), s.name))));
+      return c;
+    }
+
+    function tile(label, value, note) { return el("div", { class: "tile" }, el("div", { class: "label", text: label }), el("div", { class: "value", text: value }), el("div", { class: "note", text: note || "" })); }
+
+    function render() {
+      const d = state.data, body = document.getElementById("body");
+      body.classList.remove("loading");
+      if (!d) return;
+      const s = d.summary;
+      // every slot of the range, empty ones included, so time reads evenly
+      const byT = new Map(d.points.map(p => [p.t, p]));
+      const slots = [], ts = [];
+      for (let t = d.from; t <= d.to; t += d.step) { slots.push(byT.get(t) || null); ts.push(t); }
+      slots.t = ts;
+      const errRate = s.requests ? (100 * s.errors / Math.max(1, s.requests)) : 0;
+      const tiles = el("div", { class: "tiles" },
+        tile("Requests", compact(s.requests), s.events || s.calls ? `plus ${compact(s.events)} events, ${compact(s.calls)} calls` : ""),
+        tile("Errors", s.errors ? errRate.toFixed(errRate < 1 ? 2 : 1) + "%" : "0", `${compact(s.errors)} failed (5xx, timeouts)`),
+        tile("Median time", ms(s.p50_ms), `p95 ${ms(s.p95_ms)} · p99 ${ms(s.p99_ms)}`),
+        tile("Average time", ms(s.avg_ms), `db ${ms(s.db_ms)} · http ${ms(s.http_ms)}`));
+      if (!d.points.length) { body.replaceChildren(tiles, el("p", { class: "empty", text: "No requests in this range." })); return; }
+      const c = v => `var(${v})`;
+      const reqSeries = [
+        { name: "answered", color: c("--s1"), get: p => Math.max(0, p.requests - p.errors) },
+        { name: "failed", color: c("--critical"), get: p => p.errors },
+      ];
+      const latSeries = [
+        { name: "p50", color: c("--s1"), get: p => p.p50_ms },
+        { name: "p95", color: c("--s2"), get: p => p.p95_ms },
+        { name: "p99", color: c("--s3"), get: p => p.p99_ms },
+      ];
+      const timeSeries = [
+        { name: "CPU", color: c("--s1"), get: p => p.cpu_ms },
+        { name: "database", color: c("--s2"), get: p => p.db_ms },
+        { name: "outgoing HTTP", color: c("--s3"), get: p => p.http_ms },
+        { name: "other", color: c("--s4"), get: p => p.other_ms },
+      ];
+      const per = d.step === 60 ? "a minute" : d.step < 3600 ? `${d.step / 60} minutes` : `${d.step / 3600} hours`;
+      const c1 = card("Requests", `Per ${per}; failed are 5xx answers and timeouts.`, reqSeries, false);
+      chart(c1, { kind: "stack", series: reqSeries, slots, step: d.step, fmt: compact });
+      const c2 = card("Response time", "Percentiles: half of the requests are faster than p50, 99 in 100 faster than p99.", latSeries, true);
+      chart(c2, { kind: "line", series: latSeries, slots, step: d.step, fmt: ms, axis: axisMs });
+      const c3 = card("Where an average request's time goes", "CPU is the app's own work; other is starting the instance and waiting for a core.", timeSeries, false);
+      chart(c3, { kind: "stack", series: timeSeries, slots, step: d.step, fmt: ms, axis: axisMs });
+      // the numbers as a table, for every value without hovering
+      const head = ["Time", "Requests", "Failed", "p50", "p95", "p99", "CPU", "Database", "HTTP", "Other", "DB queries", "HTTP requests"];
+      const rows = d.points.slice().reverse().map(p => el("tr", {}, ...[when(p.t, d.step), compact(p.requests), compact(p.errors), ms(p.p50_ms), ms(p.p95_ms), ms(p.p99_ms), ms(p.cpu_ms), ms(p.db_ms), ms(p.http_ms), ms(p.other_ms), compact(p.db_queries), compact(p.outbound_requests)].map(v => el("td", { text: v }))));
+      const table = el("details", {}, el("summary", { text: "The numbers" }), el("div", { class: "table-wrap" }, el("table", {}, el("thead", {}, el("tr", {}, ...head.map(h => el("th", { text: h })))), el("tbody", {}, ...rows))));
+      body.replaceChildren(tiles, c1, c2, c3, table);
+    }
+
+    async function load() {
+      if (!state.app) return;
+      document.getElementById("body").classList.add("loading");
+      const r = await fetch(`/_platform/metrics?app=${encodeURIComponent(state.app)}&range=${state.range}`);
+      if (!r.ok) { document.getElementById("body").replaceChildren(el("p", { class: "empty", text: (await r.json().catch(() => ({}))).error || "can't load" })); return; }
+      state.data = await r.json();
+      render();
+    }
+
+    async function init() {
+      const ranges = document.getElementById("ranges");
+      for (const r of RANGES) {
+        const b = el("button", { type: "button", text: r, "aria-pressed": String(r === state.range) });
+        b.onclick = () => { state.range = r; for (const x of ranges.children) x.setAttribute("aria-pressed", String(x.textContent === r)); save(); load(); };
+        ranges.append(b);
+      }
+      const stats = await (await fetch("/_platform/stats")).json().catch(() => ({ apps: {} }));
+      const names = Object.keys(stats.apps || {}).sort();
+      const select = document.getElementById("app");
+      for (const n of names) select.append(el("option", { value: n, text: n }));
+      if (!names.length) { document.getElementById("body").replaceChildren(el("p", { class: "empty", text: "No apps you can see. Open this page with ?token=YOUR_TOKEN." })); return; }
+      const q = new URLSearchParams(location.search).get("app");
+      state.app = names.includes(q) ? q : names.includes(state.app) ? state.app : names[0];
+      select.value = state.app;
+      select.onchange = () => { state.app = select.value; save(); load(); };
+      load();
+      setInterval(load, 30000);
+    }
+    init();
+  </script>
+</body>
+</html>

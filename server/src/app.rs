@@ -21,6 +21,9 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use wasmtime_wasi_http::p2::bindings::ProxyPre;
 use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpCtxView, WasiHttpView};
 
+/// What one instance may write to its standard output and error.
+const OUTPUT_LIMIT: usize = 256 << 10;
+
 /// Data owned by one `Store`, i.e. by one instance.
 pub struct RequestState {
     pub table: ResourceTable,
@@ -41,12 +44,18 @@ pub struct RequestState {
     pub app_id: usize,
     /// Outgoing HTTP: where the app may go, and its connections.
     pub outbound: crate::outbound::Hooks,
+    /// The instance's standard output and error, for the app's log.
+    pub output: wasmtime_wasi::p2::pipe::MemoryOutputPipe,
 }
 
 impl RequestState {
     /// Time this instance spent waiting rather than running.
+    pub fn outbound_wait(&self) -> Duration {
+        Duration::from_nanos(self.outbound.usage.wait_ns.load(Relaxed))
+    }
+
     fn waited(&self) -> Duration {
-        self.db.wait + self.call_wait
+        self.db.wait + self.call_wait + self.outbound_wait()
     }
 
     /// CPU used so far: what the epoch checks charged, plus the stretch
@@ -183,11 +192,14 @@ impl App {
     /// a CPU budget and the worker's database pools.
     pub fn new_store(&self, env: &Env) -> Store<RequestState> {
         let limits = env.platform.limits;
+        // stdout and stderr together, as a terminal shows them; what doesn't
+        // fit is dropped (the guest's writes fail)
+        let output = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(OUTPUT_LIMIT);
         let mut store = Store::new(
             self.pre.engine(),
             RequestState {
                 table: ResourceTable::new(),
-                wasi: WasiCtx::builder().inherit_stdout().inherit_stderr().envs(&self.config.env).build(),
+                wasi: WasiCtx::builder().stdout(output.clone()).stderr(output.clone()).envs(&self.config.env).build(),
                 http: WasiHttpCtx::new(),
                 limits: Limits { max_memory: limits.max_memory, memory: 0 },
                 db: DbCtx::new(env.pools.clone(), self.config.databases.clone(), self.config.db_aliases.clone(), self.config.db_timeout),
@@ -203,7 +215,9 @@ impl App {
                     platform: env.platform.clone(),
                     worker: env.worker,
                     app_id: self.id,
+                    usage: Arc::default(),
                 },
+                output,
             },
         );
         store.limiter(|s| &mut s.limits);

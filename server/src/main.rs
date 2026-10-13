@@ -13,6 +13,8 @@ mod flags;
 mod functions;
 mod jobs;
 mod loader;
+mod metrics;
+mod logs;
 mod managed;
 mod outbound;
 mod platform;
@@ -361,6 +363,7 @@ fn main() -> Result<()> {
                 })?),
             };
             db::MANAGED_DIR.set(data_dir.join("apps")).ok();
+            logs::DIR.set(data_dir.join("logs")).ok();
             let deployment = source.load(&data_dir)?;
             if deployment.apps.is_empty() && deployment.sites.is_empty() {
                 eprintln!("note: no apps yet; deploy one (plumb deploy, or PUT /_platform/apps/NAME/deploy)");
@@ -448,6 +451,9 @@ fn main() -> Result<()> {
             } else {
                 None
             };
+            let metrics = Arc::new(metrics::Metrics::open(&data_dir.join("metrics.db"))?);
+            metrics::METRICS.set(metrics.clone()).ok();
+            metrics::spawn(platform.clone(), metrics)?;
             server::serve(platform, server::ServeOpts { listen, workers, job_workers, tls })?;
         }
         Command::Deploy { url, app, file, token } => client::deploy(&url, &app, &file, token.as_deref())?,

@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -124,6 +125,17 @@ pub struct Hooks {
     pub platform: Arc<Platform>,
     pub worker: usize,
     pub app_id: usize,
+    /// The instance's requests and the time it waited on them.
+    pub usage: Arc<OutboundUse>,
+}
+
+/// One instance's outgoing requests: how many, and how long it waited on
+/// them (to the response's head, then while reading the body), which isn't
+/// its CPU time.
+#[derive(Default)]
+pub struct OutboundUse {
+    pub requests: AtomicU64,
+    pub wait_ns: AtomicU64,
 }
 
 /// Where the counts of one instance's outbound traffic go.
@@ -132,6 +144,7 @@ struct Meter {
     platform: Arc<Platform>,
     worker: usize,
     app_id: usize,
+    usage: Arc<OutboundUse>,
 }
 
 impl Meter {
@@ -139,6 +152,10 @@ impl Meter {
     // that worker's (single-threaded) runtime.
     fn add(&self, c: Counter, n: u64) {
         self.platform.stats.counters(self.worker, self.app_id).add(c, n);
+    }
+
+    fn waited(&self, since: Instant) {
+        self.usage.wait_ns.fetch_add(since.elapsed().as_nanos() as u64, Relaxed);
     }
 }
 
@@ -154,9 +171,12 @@ impl WasiHttpHooks for Hooks {
         drop(fut);
         let app = self.app.clone();
         let policy = self.policy.clone();
-        let meter = Meter { platform: self.platform.clone(), worker: self.worker, app_id: self.app_id };
+        let meter = Meter { platform: self.platform.clone(), worker: self.worker, app_id: self.app_id, usage: self.usage.clone() };
         Box::new(async move {
-            let res = send(&app, &policy, &meter, request, options).await?;
+            let started = Instant::now();
+            let res = send(&app, &policy, &meter, request, options).await;
+            meter.waited(started);
+            let res = res?;
             Ok((res, Box::new(async { Ok(()) }) as Box<dyn Future<Output = Result<(), Error>> + Send>))
         })
     }
@@ -168,7 +188,7 @@ async fn send(app: &str, policy: &Policy, meter: &Meter, mut req: Request<WasiBo
     let host = uri.host().ok_or(Error::HttpRequestUriInvalid)?.trim_start_matches('[').trim_end_matches(']').to_string();
     let port = uri.port_u16().unwrap_or(if tls { 443 } else { 80 });
     if !policy.allows(&host) {
-        eprintln!("{app}: outbound request to {host} refused: not in the app's `outbound` list");
+        crate::logs::write(app, &format!("outbound request to {host} refused: not in the app's `outbound` list"));
         return Err(Error::HttpRequestDenied);
     }
     let pick = |t: Option<Duration>, default: Duration| t.map_or(default, |t| t.min(default));
@@ -180,6 +200,7 @@ async fn send(app: &str, policy: &Policy, meter: &Meter, mut req: Request<WasiBo
     let path = uri.path_and_query().map_or("/", |p| p.as_str()).to_string();
     *req.uri_mut() = http::Uri::builder().path_and_query(path).build().map_err(|_| Error::HttpRequestUriInvalid)?;
     meter.add(Counter::OutboundRequests, 1);
+    meter.usage.requests.fetch_add(1, Relaxed);
     let req = req.map(|body| Counted { inner: body, meter: meter.clone(), counter: Counter::OutboundBytesSent }.boxed_unsync());
 
     let key = format!("{}://{host}:{port}", if tls { "https" } else { "http" });
@@ -195,7 +216,7 @@ async fn send(app: &str, policy: &Policy, meter: &Meter, mut req: Request<WasiBo
     let mut timeout = tokio::time::interval(between_bytes);
     timeout.reset();
     let (parts, incoming) = res.into_parts();
-    let mut body = ResponseBody { incoming: Some(incoming), timeout, meter: meter.clone(), sender: Some(sender), key };
+    let mut body = ResponseBody { incoming: Some(incoming), timeout, meter: meter.clone(), sender: Some(sender), key, reading: Instant::now() };
     // no body at all (204, HEAD): the connection is free now
     if body.incoming.as_ref().is_some_and(|i| i.is_end_stream()) {
         body.incoming = None;
@@ -217,7 +238,7 @@ async fn connect(app: &str, host: &str, port: u16, tls: bool, timeout: Duration)
     }
     // every address must be public: a name with one inside is refused
     if let Some(bad) = addrs.iter().find(|a| !is_public(a.ip())) {
-        eprintln!("{app}: outbound request to {host} refused: it resolves to {}, which isn't a public address", bad.ip());
+        crate::logs::write(app, &format!("outbound request to {host} refused: it resolves to {}, which isn't a public address", bad.ip()));
         return Err(Error::DestinationIpProhibited);
     }
     let deadline = tokio::time::Instant::now() + timeout;
@@ -356,6 +377,8 @@ struct ResponseBody {
     meter: Meter,
     sender: Option<SendRequest<WasiBody>>,
     key: String,
+    /// Since when the body is being read: counted as waiting when it ends.
+    reading: Instant,
 }
 
 impl ResponseBody {
@@ -363,6 +386,12 @@ impl ResponseBody {
         if let Some(sender) = self.sender.take() {
             idle_put(std::mem::take(&mut self.key), sender);
         }
+    }
+}
+
+impl Drop for ResponseBody {
+    fn drop(&mut self) {
+        self.meter.waited(self.reading);
     }
 }
 

@@ -177,26 +177,39 @@ async fn handle(shared: Arc<Platform>, worker: usize, pools: Arc<Pools>, req: Re
     let counters = shared.stats.counters(worker, app.id);
     counters.request();
     counters.add(Counter::HttpRequests, 1);
-    let name = app.name.clone();
     let app_id = app.id;
+    let log = Arc::new(crate::logs::RequestLog {
+        platform: shared.clone(),
+        worker,
+        app_id,
+        app: app.name.clone(),
+        method: req.method().to_string(),
+        path: req.uri().path_and_query().map_or("/", |p| p.as_str()).chars().take(200).collect(),
+        started: Instant::now(),
+        status: Default::default(),
+        usage: Default::default(),
+        error: Default::default(),
+    });
     let env = Env::new(shared.clone(), worker, pools);
-    let result = tokio::time::timeout(shared.timeout, platform::http(env, app, req)).await;
-    match result {
-        Ok(Ok(resp)) => count_egress(resp, shared.clone(), worker, app_id),
+    let result = tokio::time::timeout(shared.timeout, platform::http(env, app, req, log.clone())).await;
+    let (status, error, resp) = match result {
+        Ok(Ok(resp)) => (resp.status().as_u16(), None, count_egress(resp, shared.clone(), worker, app_id)),
         Ok(Err(e)) if e.downcast_ref::<Trap>() == Some(&Trap::Interrupt) => {
             counters.timeout();
-            text(StatusCode::GATEWAY_TIMEOUT, "guest exceeded its CPU limit\n")
+            (504, Some("over its CPU limit".to_string()), text(StatusCode::GATEWAY_TIMEOUT, "guest exceeded its CPU limit\n"))
         }
         Ok(Err(e)) => {
             counters.error();
-            eprintln!("{name}: {e:?}");
-            text(StatusCode::INTERNAL_SERVER_ERROR, "guest error\n")
+            (500, Some(format!("{e:?}")), text(StatusCode::INTERNAL_SERVER_ERROR, "guest error\n"))
         }
         Err(_) => {
             counters.timeout();
-            text(StatusCode::GATEWAY_TIMEOUT, "guest timed out\n")
+            (504, Some(format!("over the {:?} time limit", shared.timeout)), text(StatusCode::GATEWAY_TIMEOUT, "guest timed out\n"))
         }
-    }
+    };
+    *log.status.lock().unwrap() = Some(status);
+    *log.error.lock().unwrap() = error;
+    resp
 }
 
 /// Counts response body bytes as they're actually sent.
