@@ -594,6 +594,14 @@ plumb server add root@203.0.113.10 --domain example.com
 - **By hand, as root:** `curl -fsSL
   https://github.com/semenov/wasm-server/releases/latest/download/install.sh
   | sh -s -- --domain example.com`.
+- **Next to another web server's Caddy** (say, homebase's), with
+  `--behind-caddy`: wasm-server listens on `127.0.0.1:18080`, and Caddy
+  gets one more site block, `*.DOMAIN` (in `/etc/caddy/ship/_wasm-server.caddy`,
+  a name homebase leaves alone), with a wildcard certificate through
+  Cloudflare's DNS. If Caddy rejects the block, it's taken out again and
+  nothing else changes. Running on `thor.semenov.ai` next to homebase:
+  `plumb server add root@thor.semenov.ai --domain w.semenov.ai
+  --behind-caddy`.
 - **Running it again** upgrades the binary and keeps the data, the token and
   the settings.
 - **Releases:** pushing a tag `vX.Y.Z` builds the binaries for x86_64 and

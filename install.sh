@@ -14,6 +14,12 @@
 #   --staging         Let's Encrypt's test CA (for trying a setup)
 #   --acme-directory URL, --acme-ca-file FILE   another ACME CA (tests)
 #   --print-token     end with KEY=VALUE lines for a program to read
+#   --behind-caddy    next to a Caddy that already has ports 80 and 443 (say,
+#                     homebase's): wasm-server listens on 127.0.0.1:18080
+#                     (--listen to change it) and Caddy, given one more site
+#                     block, serves *.D with a wildcard certificate (it needs
+#                     Caddy's Cloudflare DNS module and token, as homebase sets
+#                     them up) and passes the requests on
 #
 # Running it again upgrades the binary and keeps the data, the token and
 # the settings (pass --domain again to change the domain). Everything it
@@ -23,7 +29,7 @@
 set -eu
 
 REPO=semenov/wasm-server
-DOMAIN="" IP="" EMAIL="" VERSION=latest BINARY="" ACME_DIR="" ACME_CA="" PRINT=""
+DOMAIN="" IP="" EMAIL="" VERSION=latest BINARY="" ACME_DIR="" ACME_CA="" PRINT="" CADDY="" LISTEN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --domain) DOMAIN=$2; shift 2 ;;
@@ -35,6 +41,8 @@ while [ $# -gt 0 ]; do
     --acme-directory) ACME_DIR=$2; shift 2 ;;
     --acme-ca-file) ACME_CA=$2; shift 2 ;;
     --print-token) PRINT=1; shift ;;
+    --behind-caddy) CADDY=1; shift ;;
+    --listen) LISTEN=$2; shift 2 ;;
     -h|--help) sed -n '2,25p' "$0" 2>/dev/null || true; exit 0 ;;
     *) echo "error: unknown option $1 (see the top of install.sh)" >&2; exit 2 ;;
   esac
@@ -103,6 +111,17 @@ if [ -z "$TOKEN" ]; then
   TOKEN=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
   put WASM_SERVER_ADMIN_TOKEN "$TOKEN"
 fi
+# where it listens: ports 80 and 443 itself, or behind Caddy
+[ -n "$CADDY" ] || [ -z "$(get WASM_SERVER_LISTEN)" ] || [ -n "$LISTEN" ] || CADDY=1
+if [ -n "$CADDY" ]; then
+  [ -n "$LISTEN" ] || LISTEN=$(get WASM_SERVER_LISTEN)
+  [ -n "$LISTEN" ] || LISTEN=127.0.0.1:18080
+  put WASM_SERVER_LISTEN "$LISTEN"
+  put WASM_SERVER_SERVE "--listen $LISTEN"
+else
+  put WASM_SERVER_LISTEN ""
+  put WASM_SERVER_SERVE "--https --listen 0.0.0.0:443 --http-listen 0.0.0.0:80"
+fi
 put WASM_SERVER_APPS_DOMAIN "$DOMAIN"
 put WASM_SERVER_NAME "platform.$DOMAIN"
 EXTRA=$(get WASM_SERVER_EXTRA)
@@ -116,8 +135,14 @@ put WASM_SERVER_EXTRA "$EXTRA"
 chown root:wasm-server "$ENV"
 chmod 640 "$ENV"
 
-# ports 80 and 443 must be free (or ours)
-if command -v ss >/dev/null 2>&1; then
+# ports 80 and 443 must be free (or ours); behind Caddy, its port
+if [ -n "$CADDY" ]; then
+  command -v caddy >/dev/null 2>&1 && [ -f /etc/caddy/Caddyfile ] || die "--behind-caddy: there's no Caddy here (/etc/caddy/Caddyfile)"
+  PORT=${LISTEN##*:}
+  BUSY=$(ss -ltnpH 2>/dev/null | grep -E ":$PORT\s" | grep -v wasm-server || true)
+  [ -z "$BUSY" ] || die "port $PORT is taken; pick another with --listen 127.0.0.1:PORT:
+$BUSY"
+elif command -v ss >/dev/null 2>&1; then
   BUSY=$(ss -ltnpH 2>/dev/null | grep -E ':(80|443)\s' | grep -v wasm-server || true)
   [ -z "$BUSY" ] || die "ports 80 or 443 are taken by another program; stop it first:
 $BUSY"
@@ -133,7 +158,7 @@ Wants=network-online.target
 User=wasm-server
 Group=wasm-server
 EnvironmentFile=/etc/wasm-server/env
-ExecStart=/usr/local/bin/wasm-server serve --data-dir /var/lib/wasm-server --https --listen 0.0.0.0:443 --http-listen 0.0.0.0:80 $WASM_SERVER_EXTRA
+ExecStart=/usr/local/bin/wasm-server serve --data-dir /var/lib/wasm-server $WASM_SERVER_SERVE $WASM_SERVER_EXTRA
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=2
@@ -150,7 +175,7 @@ ReadWritePaths=/var/lib/wasm-server
 WantedBy=multi-user.target
 UNIT
 
-if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+if [ -z "$CADDY" ] && command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
   say "opening ports 80 and 443 in ufw"
   ufw allow 80/tcp >/dev/null
   ufw allow 443/tcp >/dev/null
@@ -160,10 +185,11 @@ systemctl daemon-reload
 systemctl enable wasm-server >/dev/null 2>&1
 systemctl restart wasm-server
 say "starting"
-# port 80 answers once it's up
+# its port answers once it's up
+if [ -n "$CADDY" ]; then PROBE=http://$LISTEN/; PORT=${LISTEN##*:}; else PROBE=http://127.0.0.1/; PORT=80; fi
 up() {
-  if command -v curl >/dev/null 2>&1; then curl -s -o /dev/null http://127.0.0.1/ 2>/dev/null
-  else ss -ltnH 2>/dev/null | grep -qE ':80\s'; fi
+  if command -v curl >/dev/null 2>&1; then curl -s -o /dev/null "$PROBE" 2>/dev/null
+  else ss -ltnH 2>/dev/null | grep -qE ":$PORT\s"; fi
 }
 i=0
 until up; do
@@ -174,6 +200,40 @@ until up; do
   fi
   sleep 1
 done
+
+# Caddy: one site block for *.DOMAIN, passing requests on (a wildcard
+# certificate through Cloudflare's DNS, as homebase sets it up). Applied
+# as homebase does: if Caddy rejects it, the previous config stays.
+if [ -n "$CADDY" ]; then
+  caddy list-modules 2>/dev/null | grep -q '^dns.providers.cloudflare$' || die "Caddy has no Cloudflare DNS module: a wildcard certificate for *.$DOMAIN needs one (homebase server add --wildcard cloudflare sets it up)"
+  [ -f /etc/caddy/dns.env ] && grep -q '^CLOUDFLARE_API_TOKEN=' /etc/caddy/dns.env || die "Caddy has no CLOUDFLARE_API_TOKEN (/etc/caddy/dns.env)"
+  if [ -d /etc/caddy/ship ]; then
+    SITE=/etc/caddy/ship/_wasm-server.caddy   # homebase leaves names with _ alone
+  else
+    SITE=/etc/caddy/wasm-server.caddy
+    grep -qF "import $SITE" /etc/caddy/Caddyfile || die "add \"import $SITE\" to /etc/caddy/Caddyfile first"
+  fi
+  NEW="# wasm-server (installed by its install.sh, not by homebase): Plumb projects
+*.$DOMAIN {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+	reverse_proxy $LISTEN
+}
+"
+  OLD=""
+  [ -f "$SITE" ] && OLD=$(cat "$SITE")
+  if [ "$OLD" != "$(printf '%s' "$NEW")" ]; then
+    say "adding *.$DOMAIN to Caddy ($SITE)"
+    printf '%s' "$NEW" > "$SITE"
+    if ! (set -a; . /etc/caddy/dns.env; caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile) >"$TMP/caddy.log" 2>&1; then
+      if [ -n "$OLD" ]; then printf '%s\n' "$OLD" > "$SITE"; else rm -f "$SITE"; fi
+      (set -a; . /etc/caddy/dns.env; caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile) >/dev/null 2>&1 || true
+      tail -20 "$TMP/caddy.log" >&2
+      die "Caddy rejected the site block, so it was taken out again; nothing else changed in Caddy"
+    fi
+  fi
+fi
 
 if [ -n "$PRINT" ]; then
   echo "WASM_SERVER_URL=https://platform.$DOMAIN"
