@@ -219,7 +219,8 @@ Apps call other servers with standard `wasi:http/outgoing-handler`
   APP=HOST`; `[]` or `APP=none`: no requests). Loopback, private, link-local,
   cloud metadata and other non-public addresses are always refused, checked
   after DNS on every address of the name, and the connection goes to a
-  checked address. A refusal is logged with the app's name.
+  checked address. A refusal is logged with the app's name. For local development, `--outbound-private` lets
+  apps reach this machine and private networks (`plumb dev` sets it).
 - **Connections** are kept per worker and per host for 60 s and reused: to
   example.com a request takes 8 ms on a kept connection, 25–35 ms on a new
   one (TCP and TLS handshakes).

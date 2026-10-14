@@ -224,6 +224,10 @@ enum Command {
         /// cloud metadata addresses are always refused.
         #[arg(long = "outbound", value_parser = parse_pair)]
         outbound: Vec<(String, String)>,
+        /// Let apps reach this machine and private networks too: for local
+        /// development only (`plumb dev` sets it), never on a public server.
+        #[arg(long)]
+        outbound_private: bool,
         #[arg(short, long, default_value = "127.0.0.1:8080")]
         listen: SocketAddr,
         /// Worker threads; defaults to the number of CPUs.
@@ -392,6 +396,7 @@ fn main() -> Result<()> {
             https,
             server_name,
             apps_domain,
+            outbound_private,
             http_listen,
             acme_email,
             acme_directory,
@@ -431,6 +436,10 @@ fn main() -> Result<()> {
                     outbound,
                 })?),
             };
+            if outbound_private {
+                eprintln!("note: --outbound-private: apps may reach this machine and private networks");
+                outbound::ALLOW_PRIVATE.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             db::MANAGED_DIR.set(data_dir.join("apps")).ok();
             if let Some(d) = apps_domain.map(|d| d.trim().trim_start_matches("*.").to_ascii_lowercase()).filter(|d| !d.is_empty()) {
                 managed::APPS_DOMAIN.set(d).ok();

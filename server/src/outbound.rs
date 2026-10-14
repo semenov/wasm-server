@@ -81,6 +81,10 @@ impl Policy {
 /// Addresses on the public internet; everything an app must not reach is
 /// outside: this machine, private networks, link-local (cloud metadata at
 /// 169.254.169.254), carrier-grade NAT, multicast, reserved ranges.
+/// `--outbound-private`: apps may reach this machine and private networks
+/// too (local development, with services of your own on localhost).
+pub static ALLOW_PRIVATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(a) => {
@@ -237,7 +241,8 @@ async fn connect(app: &str, host: &str, port: u16, tls: bool, timeout: Duration)
         return Err(Error::DestinationNotFound);
     }
     // every address must be public: a name with one inside is refused
-    if let Some(bad) = addrs.iter().find(|a| !is_public(a.ip())) {
+    // (unless --outbound-private: local development)
+    if let Some(bad) = addrs.iter().find(|a| !is_public(a.ip())).filter(|_| !ALLOW_PRIVATE.load(std::sync::atomic::Ordering::Relaxed)) {
         crate::logs::write(app, &format!("outbound request to {host} refused: it resolves to {}, which isn't a public address", bad.ip()));
         return Err(Error::DestinationIpProhibited);
     }
