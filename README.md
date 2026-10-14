@@ -458,6 +458,13 @@ schema.
   `apps/NAME/migrations.jsonl` is the ledger (`GET
   projects/NAME/migrations`, `plumb migrations`). Deploys of one project
   run one at a time.
+- **SQL checked before going live:** the release names its apps' SQL
+  statements (`plumb deploy` reads them from the code, with where they are).
+  After the migrations' `before` steps, each is prepared (not run) against
+  the project's databases, and for a query that fills records, its columns
+  must cover the record's fields. A statement that doesn't fit (a typo, a
+  dropped column, a missing field) refuses the deploy, or the rollback, with
+  its file and line.
 - **Not in releases:** data (databases, users' files) and secrets, so a
   rollback doesn't bring back an old key.
 - **Taking the data away** (`server/src/dbtools.rs`): `GET
@@ -497,6 +504,12 @@ schema.
   CPU, database, outgoing HTTP and the rest. `GET
   /_platform/metrics?app=APP&range=1h|6h|24h|7d|30d` (`plumb stats`), drawn
   at `/_platform/requests`.
+- **Each SQL statement's cost** (`server/src/querystats.rs`): per app and
+  statement text, how many runs, errors, total and longest time since the
+  server started. `GET /_platform/projects/NAME/queries` (`plumb stats
+  --queries`) lists the costliest. A statement slower than 200 ms gets a
+  line in the app's log (once a minute at most); for SQLite with its plan,
+  and when it reads a whole table, a hint to add an index.
 - **Waiting isn't CPU:** time an instance waits on the database, other
   functions or outgoing HTTP doesn't count against `--cpu-limit-ms`.
 

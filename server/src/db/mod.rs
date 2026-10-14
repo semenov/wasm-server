@@ -198,10 +198,40 @@ pub fn add_to_linker(linker: &mut Linker<RequestState>) -> Result<()> {
     sql::add_to_linker::<RequestState, HasSelf<RequestState>>(linker, |s| s)
 }
 
+impl RequestState {
+    /// Counts a statement (`querystats.rs`); a slow one gets a line in the
+    /// app's log, with SQLite's plan when `db` names a SQLite database.
+    async fn note_sql(&mut self, db: Option<&str>, sql: &str, started: Instant, failed: bool) {
+        let took = started.elapsed();
+        let app = self.outbound.app.clone();
+        if !crate::querystats::note(&app, sql, took, failed) {
+            return;
+        }
+        let (mut plan, mut tables) = (Vec::new(), Vec::new());
+        let texts = |r: QueryResult, col: usize| -> Vec<String> {
+            r.rows.iter().filter_map(|row| match row.get(col) {
+                Some(Value::Text(t)) => Some(t.clone()),
+                _ => None,
+            }).collect()
+        };
+        if let Some(BackendRef::Sqlite(pool)) = db.and_then(|d| self.db.backend(d).ok()) {
+            let deadline = self.db.deadline();
+            if let Ok(r) = pool.clone().query(deadline, format!("EXPLAIN QUERY PLAN {sql}"), Vec::new()).await {
+                plan = texts(r, 3);
+            }
+            if let Ok(r) = pool.clone().query(deadline, "SELECT name FROM sqlite_master WHERE type = 'table'".into(), Vec::new()).await {
+                tables = texts(r, 0);
+            }
+        }
+        crate::logs::write(&app, &crate::querystats::slow_line(sql, took, &plan, &tables));
+    }
+}
+
 impl sql::Host for RequestState {
     async fn query(&mut self, db: String, statement: String, params: Vec<Value>) -> Result<Result<QueryResult, Error>> {
         let started = Instant::now();
         let deadline = self.db.deadline();
+        let sql = statement.clone();
         let result = match self.db.backend(&db) {
             Ok(BackendRef::Postgres(pool)) => pool.query(deadline, statement, params).await,
             Ok(BackendRef::Sqlite(pool)) => pool.clone().query(deadline, statement, params).await,
@@ -209,12 +239,14 @@ impl sql::Host for RequestState {
             Err(e) => Err(e),
         };
         self.db.record(started);
+        self.note_sql(Some(&db), &sql, started, result.is_err()).await;
         Ok(result)
     }
 
     async fn execute(&mut self, db: String, statement: String, params: Vec<Value>) -> Result<Result<u64, Error>> {
         let started = Instant::now();
         let deadline = self.db.deadline();
+        let sql = statement.clone();
         let result = match self.db.backend(&db) {
             Ok(BackendRef::Postgres(pool)) => pool.execute(deadline, statement, params).await,
             Ok(BackendRef::Sqlite(pool)) => pool.clone().execute(deadline, statement, params).await,
@@ -222,6 +254,7 @@ impl sql::Host for RequestState {
             Err(e) => Err(e),
         };
         self.db.record(started);
+        self.note_sql(Some(&db), &sql, started, result.is_err()).await;
         Ok(result)
     }
 }
@@ -246,24 +279,28 @@ impl sql::HostTransaction for RequestState {
     async fn query(&mut self, tx: Resource<Transaction>, statement: String, params: Vec<Value>) -> Result<Result<QueryResult, Error>> {
         let started = Instant::now();
         let deadline = self.db.deadline();
+        let sql = statement.clone();
         let result = match self.table.get_mut(&tx)? {
             Transaction::Postgres(tx) => tx.query(deadline, statement, params).await,
             Transaction::Sqlite(tx) => tx.query(deadline, statement, params).await,
             Transaction::Remote(id) => crate::cluster::remote_query(json!({ "op": "tx_query", "tx": *id, "statement": statement, "params": params_json(&params) })).await,
         };
         self.db.record(started);
+        self.note_sql(None, &sql, started, result.is_err()).await;
         Ok(result)
     }
 
     async fn execute(&mut self, tx: Resource<Transaction>, statement: String, params: Vec<Value>) -> Result<Result<u64, Error>> {
         let started = Instant::now();
         let deadline = self.db.deadline();
+        let sql = statement.clone();
         let result = match self.table.get_mut(&tx)? {
             Transaction::Postgres(tx) => tx.execute(deadline, statement, params).await,
             Transaction::Sqlite(tx) => tx.execute(deadline, statement, params).await,
             Transaction::Remote(id) => crate::cluster::remote_count(json!({ "op": "tx_execute", "tx": *id, "statement": statement, "params": params_json(&params) })).await,
         };
         self.db.record(started);
+        self.note_sql(None, &sql, started, result.is_err()).await;
         Ok(result)
     }
 

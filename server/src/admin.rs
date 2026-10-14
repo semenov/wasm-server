@@ -16,6 +16,7 @@
 //! | `projects/NAME/rollback[?to=ID]` | POST | admin | back to the previous (or given) release |
 //! | `projects/NAME/databases` | GET | admin | its databases; `databases/DB/snapshot` (a SQLite file), `databases/DB/dump` (SQL), POST `databases/DB/query` `{"sql"}` |
 //! | `projects/NAME/files[?prefix=&after=]` | GET | admin | its users' files; `files/KEY`: one, as it is |
+//! | `projects/NAME/queries` | GET | any | its apps' SQL statements, the costliest first: runs, errors, total, average and longest time (`querystats.rs`) |
 //! | `projects/NAME/migrations` | GET | any | every run of its migrations' steps, with results (`migrations.rs`) |
 //! | `projects/NAME/deploy` | POST | admin | a release with every part inline (base64) |
 //! | `releases/ID` | GET | any | a release's manifest |
@@ -236,6 +237,14 @@ async fn route(platform: Arc<Platform>, req: Request<Incoming>, path: &str, who:
                 Ok(Err(e)) => error(StatusCode::NOT_FOUND, &e),
                 Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
             }
+        }
+        (&Method::GET, ["projects", project, "queries"]) => {
+            let p = project.to_string();
+            let rows: Vec<serde_json::Value> = crate::querystats::top(&|app| crate::managed::project_of(app) == p, 50)
+                .into_iter()
+                .map(|(app, sql, s)| serde_json::json!({ "app": app, "sql": sql, "count": s.count, "errors": s.errors, "total_ms": s.total_ns as f64 / 1e6, "avg_ms": s.total_ns as f64 / 1e6 / s.count.max(1) as f64, "max_ms": s.max_ns as f64 / 1e6 }))
+                .collect();
+            json(StatusCode::OK, serde_json::json!({ "project": project, "since": "the server started", "queries": rows }).to_string())
         }
         (&Method::GET, ["projects", project, "migrations"]) => {
             let runs = crate::migrations::ledger(&platform.data_dir, project);
@@ -461,6 +470,16 @@ async fn activate(platform: Arc<Platform>, project: String, release: crate::mana
             }
             notes.push(format!("migration {}: `before` done", m.file));
         }
+    }
+    // the apps' SQL against the databases as they are now
+    let (d, p, r) = (data_dir.clone(), project.clone(), release.clone());
+    let sql_errors = tokio::task::spawn_blocking(move || crate::managed::check_sql(&d, &p, &r)).await.unwrap_or_default();
+    if !sql_errors.is_empty() {
+        let mut msg = format!("the release's SQL doesn't fit the database, so it didn't go live:\n  {}", sql_errors.join("\n  "));
+        if !notes.is_empty() {
+            msg += &format!("\n({})", notes.join("; "));
+        }
+        return error(StatusCode::UNPROCESSABLE_ENTITY, &msg);
     }
     if let Err(e) = crate::managed::set_current(&data_dir, &project, Some(&id)) {
         return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());

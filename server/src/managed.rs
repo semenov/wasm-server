@@ -80,9 +80,92 @@ pub struct Release {
     /// Steps run once per server, in order (`migrations.rs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub migrations: Vec<Migration>,
+    /// Its apps' SQL, checked against the project's databases before the
+    /// release goes live.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sql: Vec<SqlCheck>,
     /// What built it (`plumb 0.1.0`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compiler: Option<String>,
+}
+
+/// An SQL statement of an app, where it is in the code, and for a query
+/// that fills records the record's fields (all, and the required ones).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SqlCheck {
+    pub app: String,
+    pub at: String,
+    pub sql: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<Vec<String>>,
+}
+
+/// Column and field names match as `json.decode` matches keys: case, `_`
+/// and `-` aside.
+fn loose(name: &str) -> String {
+    name.chars().filter(|c| *c != '_' && *c != '-').flat_map(char::to_lowercase).collect()
+}
+
+/// Checks every SQL statement of the release against the project's
+/// databases as they are now (after its migrations' `before` steps), without
+/// running them: each must compile on one of them, and a query that fills
+/// records must have a column for every field they need. The errors, with
+/// where in the code (none: all fine).
+pub fn check_sql(data_dir: &Path, project: &str, r: &Release) -> Vec<String> {
+    let dir = project_dir(data_dir, project).join("db");
+    let conns: Vec<(String, rusqlite::Connection)> = r
+        .settings
+        .databases
+        .iter()
+        .filter_map(|db| {
+            let file = dir.join(format!("{db}.db"));
+            let conn = rusqlite::Connection::open_with_flags(&file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
+            Some((db.clone(), conn))
+        })
+        .collect();
+    let mut errors = Vec::new();
+    if conns.is_empty() {
+        return errors;
+    }
+    for c in &r.sql {
+        let mut first_error = None;
+        let mut columns = None;
+        for (_, conn) in &conns {
+            match conn.prepare(&c.sql) {
+                Ok(stmt) => {
+                    columns = Some(stmt.column_names().iter().map(|n| n.to_string()).collect::<Vec<_>>());
+                    break;
+                }
+                Err(e) => {
+                    first_error.get_or_insert_with(|| e.to_string());
+                }
+            }
+        }
+        let place = format!("{} ({}): {}", c.at, c.app, c.sql.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(120).collect::<String>());
+        match (columns, &c.required) {
+            (None, _) => errors.push(format!("{place}\n    {}", first_error.unwrap_or_default())),
+            (Some(cols), Some(required)) => {
+                let have: HashSet<String> = cols.iter().map(|c| loose(c)).collect();
+                let missing: Vec<&String> = required.iter().filter(|f| !have.contains(&loose(f))).collect();
+                if !missing.is_empty() {
+                    errors.push(format!(
+                        "{place}\n    the query gives no column for {} (its columns: {}); name one with `as`",
+                        missing.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", "),
+                        if cols.is_empty() { "none".to_string() } else { cols.join(", ") }
+                    ));
+                }
+            }
+            _ => {}
+        }
+        if errors.len() >= 20 {
+            errors.push("(and maybe more)".into());
+            break;
+        }
+    }
+    errors
 }
 
 /// A migration: a Plumb file with `fn before()` (runs before the release
@@ -451,6 +534,7 @@ impl Upload {
             files: BTreeMap::new(),
             schema: BTreeMap::new(),
             migrations: Vec::new(),
+            sql: Vec::new(),
             compiler: None,
         };
         for (app, c) in self.components {
@@ -573,6 +657,7 @@ mod tests {
         assert!(!valid_name("") && !valid_name("Notes") && !valid_name("2app") && !valid_name("a/b") && !valid_name("..") && !valid_name("a_b"));
         assert_eq!((app_name("shop", "shop"), app_name("shop", "api")), ("shop".to_string(), "shop.api".to_string()));
         assert_eq!((project_of("shop"), project_of("shop.api")), ("shop", "shop"));
+        assert_eq!((loose("created_at"), loose("createdAt"), loose("Created-At")), ("createdat".into(), "createdat".into(), "createdat".into()));
         assert!(valid_db("main") && valid_db("users_2") && !valid_db("a/b") && !valid_db(".."));
     }
 }

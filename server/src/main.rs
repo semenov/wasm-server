@@ -21,6 +21,7 @@ mod managed;
 mod migrations;
 mod outbound;
 mod platform;
+mod querystats;
 mod routes;
 mod server;
 mod static_files;
