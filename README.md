@@ -486,6 +486,11 @@ schema.
   `metrics?project=NAME` adds a project's apps together.
 - **Databases** are the project's own SQLite files, which its apps open by
   their own names (`db.open("main")` is `shop/main`).
+- **Queues and cron:** an app's settings may name the queues it consumes
+  (`"queues": ["emails"]`) and its cron jobs (`"cron": {"digest": "0 9 * *
+  *"}`); `plumb deploy` reads both from the code. Queues are the project's
+  own: its apps send to `emails`, which the server keeps as `shop/emails`,
+  and deliver it to the consumer under its own name.
 - **`PUT /_platform/projects/NAME/secrets`** with `{"KEY": "value", "OLD":
   null}` sets or removes environment variables of all its apps, kept
   owner-only on disk; `GET` lists their names.

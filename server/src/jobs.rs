@@ -284,6 +284,11 @@ pub async fn enqueue(platform: &Platform, name: String, payload: Vec<u8>, delay_
 
 impl queue::Host for RequestState {
     async fn send(&mut self, name: String, payload: Vec<u8>, delay_ms: u64) -> Result<Result<(), QueueError>> {
+        // a deployed project's queues are its own: `emails` is `project/emails`
+        let name = match &self.project {
+            Some(p) => format!("{p}/{name}"),
+            None => name,
+        };
         let platform = self.env.platform.clone();
         let counters = self.counters();
         counters.add(crate::stats::Counter::QueueMessages, 1);
@@ -359,7 +364,12 @@ async fn deliver(platform: Arc<Platform>, worker: usize, pools: Arc<Pools>, job:
     counters.request();
     counters.add(crate::stats::Counter::Events, 1);
     let env = Env::new(platform.clone(), worker, pools);
-    let error = match platform::event(env, &app, job.kind, job.uid.clone(), job.name.clone(), job.payload, job.attempt).await {
+    // the app sees its queue by the name its code uses
+    let name = match &app.config.project {
+        Some(p) if job.kind == Kind::Queue => job.name.strip_prefix(&format!("{p}/")).unwrap_or(&job.name).to_string(),
+        _ => job.name.clone(),
+    };
+    let error = match platform::event(env, &app, job.kind, job.uid.clone(), name, job.payload, job.attempt).await {
         Ok(Ok(())) => {
             let _ = store.tx.send(Cmd::Done { id: job.id });
             return;

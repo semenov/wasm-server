@@ -58,6 +58,13 @@ pub struct AppSettings {
     /// Without code: a single-page app, `index.html` for every page path.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub spa: bool,
+    /// Queues whose messages go to this app, by the names its code uses
+    /// (kept on the server as `project/name`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queues: Vec<String>,
+    /// Cron jobs that run this app: name -> schedule.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cron: BTreeMap<String, String>,
 }
 
 /// A release: what a project runs, every part by its hash in the store.
@@ -305,6 +312,8 @@ pub fn add_to(deployment: &mut Deployment, data_dir: &Path) -> Result<()> {
                 path: s.path.clone(),
                 outbound: s.outbound.clone().or_else(|| settings.outbound.clone()),
                 websocket: s.websocket.clone(),
+                queues: s.queues.iter().map(|q| format!("{project}/{q}")).collect(),
+                cron: s.cron.clone(),
                 env: env.clone(),
                 project: Some(project.clone()),
                 ..Default::default()
